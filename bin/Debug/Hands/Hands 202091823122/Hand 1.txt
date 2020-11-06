@@ -1,0 +1,30 @@
+Pokerladder:  Hold'em No Limit (100/200) - 2020/9/18 23:12:07.9111047 UTC
+Table 'TPL' 2-max (Play Money) Seat #2 is the button
+Seat 1: cpu (10000 in chips)
+Seat 2: linus (10000 in chips)
+linus: posts small blind 100
+cpu: posts big blind 200
+*** HOLE CARDS ***
+Dealt to cpu [2c 3h]
+linus: calls 100
+cpu: checks
+linus: checks
+*** FLOP *** [7s 4d Kd]
+cpu: checks
+linus: checks
+*** TURN *** [7s 4d Kd] [3c]
+cpu: checks
+linus: checks
+*** RIVER *** [7s 4d Kd 3c] [4s]
+cpu: checks
+linus: checks
+*** SHOWDOWN ***
+cpu: shows [2c 3h] (two pair, Fours and Threes)
+linus: shows [9s Ks] (two pair, Kings and Fours)
+linus: mucks hand
+linus: collected 400 from pot
+*** SUMMARY ***
+Total pot 400
+Board [7s 4d Kd 3c 4s]
+Seat 1: cpu (small blind) [2c 3h] and lost with two pair, Kings and Fours
+Seat 2: linus (button) (big blind) mucked

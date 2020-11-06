@@ -16,5 +16,6 @@ Features:
   • Foundations for a UDP p2p connection
 
 ## Installation
-
+Download the Debug folder and run the pokerladder.exe file.
 ## Usage
+From the last point of compilation you can only run the poker form, so running the file twice on the same machine measn you can play locally only. 

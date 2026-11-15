@@ -3,6 +3,11 @@
 
 pub mod card;
 pub mod eval;
+pub mod holdem;
 
 pub use card::{Card, Deck};
 pub use eval::{Category, HandRank, evaluate};
+pub use holdem::{
+    Action, Chips, ConfigError, Event, Hand, HandConfig, HandError, Legal, PublicState, Seat,
+    Street, Visibility,
+};

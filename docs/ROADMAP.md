@@ -106,10 +106,17 @@ invariant validation to cut startup time.
 - [x] Direct (bitmask) evaluator — the reference used to build and test the table.
 - [x] Two Plus Two table generator + lookup API; exhaustive tests; benches.
 - [x] PokerStars-style hand descriptions (`HandRank::describe`).
-- [ ] Heads-up NLHE rules: button = small blind, acts first preflop / last postflop;
-      min-raise; all-ins; uncalled bet returned; split pots incl. odd chip.
+- [x] Heads-up NLHE hand state machine (`holdem::Hand`): button = small blind, acts
+      first preflop / last postflop; BB option; min-raise from last full raise; short
+      all-ins; raises capped at the effective stack (`Action::AllIn` shoves it);
+      uncalled bets returned; hands tabled before all-in runouts; forced showdown (no
+      mucking, anti-collusion); split pots (always even heads-up). Server helpers:
+      `Event::visibility`, redacted hole cards in `Debug`, `Legal::passive_default`
+      (timeouts), `Hand::public_state` (reconnects). Chips capped at 2^53 (JS-safe).
 - [ ] Sit-and-go structure: fixed starting stacks, blind levels by hand count.
-- [ ] Property tests: chip conservation, no illegal state transitions.
+- [x] Property tests (4000 random hands): chip conservation every step, illegal
+      actions rejected without state change, independent min-raise model, event log
+      balances, termination.
 - [ ] Hand-history output (PokerStars-style text so existing replayers work).
 
 ### 2. Server

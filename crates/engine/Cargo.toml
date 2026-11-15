@@ -10,6 +10,7 @@ rustc-hash = "2.1.3"
 
 [dev-dependencies]
 criterion = "0.8.2"
+proptest = "1.12.0"
 rs_poker = { version = "5.1.0", default-features = false }
 
 [[bench]]

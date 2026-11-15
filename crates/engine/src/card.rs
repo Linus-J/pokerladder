@@ -211,7 +211,6 @@ pub fn parse_cards(s: &str) -> Result<Vec<Card>, ParseCardError> {
 }
 
 /// A shuffled 52-card deck dealt from the top.
-#[derive(Clone)]
 pub struct Deck {
     cards: [Card; 52],
     next: usize,
@@ -239,6 +238,22 @@ impl Deck {
 
     pub fn remaining(&self) -> usize {
         52 - self.next
+    }
+
+    /// Test-only: `top` is dealt first, then the remaining cards in index order.
+    #[cfg(test)]
+    pub(crate) fn stacked(top: &[Card]) -> Self {
+        assert!(
+            CardSet::from_cards(top).is_some(),
+            "duplicate in stacked deck"
+        );
+        let mut cards = [Card(0); 52];
+        cards[..top.len()].copy_from_slice(top);
+        let rest = Card::all().filter(|c| !top.contains(c));
+        for (slot, c) in cards[top.len()..].iter_mut().zip(rest) {
+            *slot = c;
+        }
+        Deck { cards, next: 0 }
     }
 }
 

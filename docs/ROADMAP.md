@@ -96,7 +96,8 @@ invariant validation to cut startup time.
 
 ## Status (2026-11-15)
 
-Phase 1 (engine) complete on branch `rewrite`. Next: Phase 2 (server). Suggested
+Phase 1 (engine) complete and merged into `main`. Next: Phase 2 (server), on
+branch `phase-2-server`. Suggested
 order: workspace crate + config → Postgres schema (users, sessions, matches, hands,
 audit events, ratings) via sqlx migrations → auth (argon2, email verification,
 sessions) → WebSocket protocol types (shared with the TS client via `ts-rs`) → match
@@ -154,6 +155,10 @@ engine contracts the server must respect.
 
 ### 3. Web client
 - [ ] Lobby / queue, table view, action controls, hand-history viewer, leaderboard.
+- [ ] Rewrite `README.md` for the new project once something is runnable: what it
+      is, the free-entry prize model, architecture, local setup (Rust, Postgres,
+      Node), running tests/benches, and a pointer to `legacy/`. The current README
+      still describes the old C# client.
 
 ### 4. Seasons & integrity
 - [ ] Monthly seasons; minimum matches to qualify.

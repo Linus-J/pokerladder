@@ -1,9 +1,8 @@
 # Pokerladder
 
 Heads-up No-Limit Hold'em ladder: players are matched by rating, play sit-and-go
-matches, and a monthly season decides a free-entry, sponsor-funded prize. Rewrite in
-progress on branch `rewrite`; the plan and status live in `docs/ROADMAP.md` (read it
-first). `legacy/` is the retired C# P2P client — reference only, never patch it.
+matches, and a monthly season decides a free-entry, sponsor-funded prize. The plan and status
+live in `docs/ROADMAP.md` (read it first). `legacy/` is the retired C# P2P client — reference only, never patch it.
 
 ## Layout
 
@@ -55,6 +54,7 @@ web/            (Phase 3, not started) Svelte 5 + Vite + TypeScript SPA
 - Each significant piece gets an independent code-review pass before committing, and
   property tests should check rules independently of the implementation (mutation-test
   them: plant a bug, confirm a test fails).
-- Commit on the `rewrite` branch; end commit messages with the Co-Authored-By line.
+- Work on a feature branch per phase (e.g. `phase-2-server`), merged into `main` by
+  PR; end commit messages with the Co-Authored-By line.
 - Gambling-law sensitivity: no paid entry of any kind; prizes are sponsor-funded and
   free to enter. Flag anything that would change that.

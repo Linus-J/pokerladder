@@ -15,9 +15,16 @@
 //!   there is therefore only ever one pot.
 //! - Once betting is closed with a player all-in, both hands are turned face up
 //!   ([`Event::HandsTabled`]) and the board is run out.
-//! - Both hands are shown at showdown (no mucking — a deliberate anti-collusion choice
-//!   for a ladder); the last aggressor on the final betting street shows first,
-//!   otherwise the big blind.
+//! - Showdown: the last aggressor on the final betting street shows first, otherwise
+//!   the big blind. The other player shows a winning or tying hand; a losing hand is
+//!   mucked ([`Event::Mucked`]) if that player has auto-muck on
+//!   ([`HandConfig::auto_muck`]). Hands tabled after an all-in can't be mucked.
+//!
+//! **Audit log.** Mucked and folded cards are hidden from the opponent, not from the
+//! server: every hand's hole cards appear in the private [`Event::HoleCards`] events.
+//! The server should persist the *unfiltered* event stream as its audit log (collusion
+//! and chip-dumping analysis need folded hands too), and filter by
+//! [`Event::visibility`] only when sending to clients.
 //! - Split pots: heads-up the pot is always even at showdown (both contributions are
 //!   equal once uncalled chips are returned); any odd chip would go to the big blind.
 //!
@@ -198,6 +205,11 @@ pub enum Event {
         cards: [Card; 2],
         rank: HandRank,
     },
+    /// A losing hand thrown away unseen. The cards are only in the audit log (via the
+    /// private `HoleCards` event), never in public output.
+    Mucked {
+        seat: Seat,
+    },
     Won {
         seat: Seat,
         amount: Chips,
@@ -265,6 +277,8 @@ pub struct HandConfig {
     pub stacks: [Chips; 2],
     pub small_blind: Chips,
     pub big_blind: Chips,
+    /// Per seat: muck a losing hand at showdown instead of showing it.
+    pub auto_muck: [bool; 2],
 }
 
 /// Everything about a hand that both players (and spectators) may see — e.g. to
@@ -301,6 +315,7 @@ pub struct Hand {
     last_raise: Chips,
     /// Last player to bet or raise on the current street.
     aggressor: Option<Seat>,
+    auto_muck: [bool; 2],
     complete: bool,
 }
 
@@ -312,6 +327,7 @@ impl Hand {
             stacks,
             small_blind,
             big_blind,
+            auto_muck,
         } = config;
         let invalid = |e| Err(HandError::InvalidConfig(e));
         if stacks.contains(&0) {
@@ -352,6 +368,7 @@ impl Hand {
             acted: [false; 2],
             last_raise: big_blind,
             aggressor: None,
+            auto_muck,
             complete: false,
         };
         let mut ev = Vec::new();
@@ -627,12 +644,19 @@ impl Hand {
         let ranks = [rank(Seat::Zero), rank(Seat::One)];
         let bb = self.button.other();
         let first = self.aggressor.unwrap_or(bb);
+        let tabled = self.stacks.contains(&0);
         for seat in [first, first.other()] {
-            ev.push(Event::Showdown {
-                seat,
-                cards: self.hole[seat.index()],
-                rank: ranks[seat.index()],
-            });
+            let s = seat.index();
+            let loses = ranks[s] < ranks[seat.other().index()];
+            if seat != first && loses && self.auto_muck[s] && !tabled {
+                ev.push(Event::Mucked { seat });
+            } else {
+                ev.push(Event::Showdown {
+                    seat,
+                    cards: self.hole[s],
+                    rank: ranks[s],
+                });
+            }
         }
 
         assert_eq!(
@@ -678,6 +702,7 @@ mod tests {
             stacks,
             small_blind: 50,
             big_blind: 100,
+            auto_muck: [true; 2],
         };
         Hand::new(config, Deck::stacked(&parse_cards(cards).unwrap())).unwrap()
     }
@@ -925,6 +950,7 @@ mod tests {
             stacks,
             small_blind,
             big_blind,
+            auto_muck: [true; 2],
         };
         let err = |c: HandConfig| Hand::new(c, deck()).err();
         use ConfigError::*;
@@ -1014,5 +1040,64 @@ mod tests {
         assert_eq!(p.committed, [300, 100]);
         assert_eq!(p.legal, h.legal());
         assert!(p.board.is_empty());
+    }
+
+    const BB_WINS: &str = "As 2c Ad 7d Kh Qs 3c 8h 9d"; // BB AA, button 27o
+
+    fn check_down(h: &mut Hand) -> Vec<Event> {
+        h.act(Zero, Call).unwrap();
+        h.act(One, Check).unwrap();
+        let mut last = vec![];
+        for _ in 0..3 {
+            h.act(One, Check).unwrap();
+            last = h.act(Zero, Check).unwrap();
+        }
+        last
+    }
+
+    fn shown(ev: &[Event]) -> Vec<(Seat, bool)> {
+        ev.iter()
+            .filter_map(|e| match e {
+                Event::Showdown { seat, .. } => Some((*seat, true)),
+                Event::Mucked { seat } => Some((*seat, false)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn losing_second_hand_is_mucked_with_auto_muck() {
+        let (mut h, _) = hand([1000, 1000], BB_WINS);
+        // BB (seat One) shows first and wins; the button's losing hand is mucked.
+        assert_eq!(shown(&check_down(&mut h)), [(One, true), (Zero, false)]);
+    }
+
+    #[test]
+    fn losing_hand_is_shown_without_auto_muck() {
+        let config = HandConfig {
+            button: Zero,
+            stacks: [1000, 1000],
+            small_blind: 50,
+            big_blind: 100,
+            auto_muck: [false; 2],
+        };
+        let deck = Deck::stacked(&parse_cards(BB_WINS).unwrap());
+        let (mut h, _) = Hand::new(config, deck).unwrap();
+        assert_eq!(shown(&check_down(&mut h)), [(One, true), (Zero, true)]);
+    }
+
+    #[test]
+    fn first_to_show_always_shows_and_winners_always_show() {
+        // BB shows first and loses; the winning button shows.
+        let (mut h, _) = hand([1000, 1000], BTN_WINS);
+        assert_eq!(shown(&check_down(&mut h)), [(One, true), (Zero, true)]);
+    }
+
+    #[test]
+    fn all_in_hands_cannot_be_mucked() {
+        let (mut h, _) = hand([1000, 1000], BB_WINS);
+        h.act(Zero, AllIn).unwrap();
+        let ev = h.act(One, Call).unwrap();
+        assert_eq!(shown(&ev), [(Zero, true), (One, true)]);
     }
 }

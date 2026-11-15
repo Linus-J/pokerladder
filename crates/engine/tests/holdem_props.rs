@@ -23,12 +23,14 @@ fn config() -> impl Strategy<Value = HandConfig> {
         1..=200u64,
         1..=200u64,
         any::<bool>(),
+        any::<[bool; 2]>(),
     )
-        .prop_map(|(a, b, sb, extra, button_zero)| HandConfig {
+        .prop_map(|(a, b, sb, extra, button_zero, auto_muck)| HandConfig {
             button: if button_zero { Seat::Zero } else { Seat::One },
             stacks: [a, b],
             small_blind: sb,
             big_blind: sb + extra,
+            auto_muck,
         })
 }
 
@@ -157,9 +159,13 @@ proptest! {
         let ends_with_ended = matches!(events.last(), Some(Event::Ended { .. }));
         prop_assert!(ends_with_ended);
         let showdowns = events.iter().filter(|e| matches!(e, Event::Showdown { .. })).count();
-        prop_assert!(showdowns == 0 || (showdowns == 2 && h.board().len() == 5));
+        let mucked = events.iter().filter(|e| matches!(e, Event::Mucked { .. })).count();
+        // A showdown reveals the first hand and shows or mucks the second.
+        prop_assert!(mucked <= 1 && (mucked == 0 || showdowns == 1));
+        let showdown = showdowns + mucked;
+        prop_assert!(showdown == 0 || (showdown == 2 && h.board().len() == 5));
         // Hands are tabled at most once, and only ahead of a showdown.
         let tabled = events.iter().filter(|e| matches!(e, Event::HandsTabled { .. })).count();
-        prop_assert!(tabled <= 1 && (tabled == 0 || showdowns == 2));
+        prop_assert!(tabled <= 1 && (tabled == 0 || (showdowns == 2 && mucked == 0)));
     }
 }

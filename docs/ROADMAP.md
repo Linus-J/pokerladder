@@ -109,8 +109,8 @@ invariant validation to cut startup time.
 - [x] Heads-up NLHE hand state machine (`holdem::Hand`): button = small blind, acts
       first preflop / last postflop; BB option; min-raise from last full raise; short
       all-ins; raises capped at the effective stack (`Action::AllIn` shoves it);
-      uncalled bets returned; hands tabled before all-in runouts; forced showdown (no
-      mucking, anti-collusion); split pots (always even heads-up). Server helpers:
+      uncalled bets returned; hands tabled before all-in runouts; showdown with auto-muck
+      for losing hands (cards stay in the server audit log); split pots (always even heads-up). Server helpers:
       `Event::visibility`, redacted hole cards in `Debug`, `Legal::passive_default`
       (timeouts), `Hand::public_state` (reconnects). Chips capped at 2^53 (JS-safe).
 - [ ] Sit-and-go structure: fixed starting stacks, blind levels by hand count.
@@ -126,6 +126,10 @@ invariant validation to cut startup time.
 - [ ] Action timer + time bank; disconnect → time bank then auto-fold (never auto-win);
       reconnect resumes the match.
 - [ ] Persist hands and match results; rating update in the same DB transaction.
+- [ ] Audit log: store every hand's *unfiltered* event stream (includes all hole cards,
+      folded and mucked). Clients only ever get events filtered by `Event::visibility`;
+      player-facing hand histories show "mucks hand". Disclose this retention in the
+      competition terms / privacy notice.
 
 ### 3. Web client
 - [ ] Lobby / queue, table view, action controls, hand-history viewer, leaderboard.
@@ -133,7 +137,8 @@ invariant validation to cut startup time.
 ### 4. Seasons & integrity
 - [ ] Monthly seasons; minimum matches to qualify.
 - [ ] Rating with uncertainty (Glicko-2) so early leaders can't "sit" on a rating.
-- [ ] Anti-abuse: diminishing gains vs repeat opponents, chip-dumping heuristics,
+- [ ] Anti-abuse: diminishing gains vs repeat opponents, chip-dumping heuristics
+      run over the audit log (e.g. folding strong hands to a specific opponent),
       one account per person, identity check before any payout.
 
 ### 5. Prizes

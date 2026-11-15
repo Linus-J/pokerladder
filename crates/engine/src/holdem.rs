@@ -238,6 +238,8 @@ pub enum ConfigError {
     TooManyChips,
     /// Fewer than 9 cards left in the deck.
     ShortDeck,
+    /// A match needs at least one blind level and `hands_per_level > 0`.
+    BadSchedule,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

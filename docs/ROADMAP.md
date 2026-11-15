@@ -113,7 +113,10 @@ invariant validation to cut startup time.
       for losing hands (cards stay in the server audit log); split pots (always even heads-up). Server helpers:
       `Event::visibility`, redacted hole cards in `Debug`, `Legal::passive_default`
       (timeouts), `Hand::public_state` (reconnects). Chips capped at 2^53 (JS-safe).
-- [ ] Sit-and-go structure: fixed starting stacks, blind levels by hand count.
+- [x] Sit-and-go match (`sng::Match`): 1500 chips, blinds 10/20 rising ~50% every
+      10 hands (12 levels, last one forces all-in), alternating button, 15 s per action
+      + 60 s bank (+10 s per 10 hands), timeouts check/fold, auto-muck preference.
+      Property test plays 300 whole random matches.
 - [x] Property tests (4000 random hands): chip conservation every step, illegal
       actions rejected without state change, independent min-raise model, event log
       balances, termination.
@@ -149,5 +152,4 @@ invariant validation to cut startup time.
 - Paid buy-ins remain out of scope (would need a Gambling Commission licence).
 
 ## Open decisions
-- Match format: starting stack, blind schedule, time controls.
 - Hosting (a single small VPS is sufficient initially).

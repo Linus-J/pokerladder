@@ -96,12 +96,14 @@ invariant validation to cut startup time.
 
 ## Status (2026-11-15)
 
-Phase 1 (engine) complete and merged into `main`. Phase 2 (server) is functionally
-complete on branch `phase-2-server`: accounts, matchmaking, match actors, WebSocket
-protocol, persistence and Elo ratings, tested end to end against Postgres (two
-WebSocket clients queue, play a whole match, and the rated result and every hand's
-audit log land in the database). Remaining before launch: a real mailer, login rate
-limiting, and the web client (Phase 3).
+Phases 1 (engine) and 2 (server) are merged into `main`. Phase 3 (web client) is
+on branch `phase-3-web`: a playable Svelte client served by the server, plus the
+Phase 2 launch blockers (SMTP mail, rate limiting, no email enumeration, history
+API). Browser tests play a whole match between two real browsers.
+
+**Before a public launch (needs the owner):** an SMTP provider and DNS (SPF/DKIM)
+for the sending domain; a host + domain + TLS reverse proxy; solicitor review of the
+privacy notice (draft in the app) and the competition terms (not yet written).
 
 ## Phases
 
@@ -160,24 +162,39 @@ limiting, and the web client (Phase 3).
       cards incl. folded/mucked) plus rendered histories for each seat and the audit
       view. Match result + Elo update (K=32) in one transaction, idempotent on retry.
       Matches interrupted by a restart are marked `abandoned` (unrated).
-- [ ] Real mail transport (only a logging mailer so far: `mail::Mailer` trait).
-- [ ] Rate limiting for login/register (per IP and per account) and per-connection
-      WebSocket message limits. (Argon2 is already capped at one hash per CPU.)
-- [ ] Registration reveals whether an email is registered (`email_taken`); switch
-      to "check your inbox" for both cases once a real mailer exists.
+- [x] SMTP mail (`SMTP_URL`, lettre, sent in the background); the server refuses
+      to start with an https `PUBLIC_URL` and no SMTP, and checks the SMTP login at
+      startup. Without SMTP, emails are logged (development).
+- [x] Rate limits (in-memory token buckets): login per IP and per account,
+      register, verify-email, resend-verification; per-connection WebSocket message
+      limit (burst 20, 10/s; disconnect after 100 refused). Argon2 capped at one hash
+      per CPU. Client IP from the peer or `TRUSTED_PROXY_HEADER`.
+- [x] Registration doesn't reveal registered emails: the same 202 response, and
+      the address owner gets an "already registered" email instead.
 - [ ] If `finish_match` fails 5 times (~15 s) the result is lost and the match is
       later marked abandoned; consider a pending-results table + reconciler.
 - [ ] Single-instance only: startup marks every `in_progress` match abandoned.
-- [ ] Disclose audit-log retention (all hole cards) in the competition terms /
-      privacy notice.
-- [ ] Hand-history and match-history endpoints for the web client.
+- [x] Draft privacy notice (`/privacy`) discloses audit-log retention.
+      **Needs legal review**, together with competition terms (not yet written).
+- [x] `GET /api/matches`, `GET /api/matches/{id}/hands` (own seat's view only;
+      404 for other players' matches), `POST /api/resend-verification`.
+- [x] Serves the built client (`STATIC_DIR`, SPA fallback) with CSP, no-referrer,
+      nosniff and frame-deny headers.
 
 ### 3. Web client
-- [ ] Lobby / queue, table view, action controls, hand-history viewer, leaderboard.
-- [ ] Rewrite `README.md` for the new project once something is runnable: what it
-      is, the free-entry prize model, architecture, local setup (Rust, Postgres,
-      Node), running tests/benches, and a pointer to `legacy/`. The current README
-      still describes the old C# client.
+- [x] Svelte 5 + Vite + TypeScript SPA (`web/`), ~29 kB gzipped JS. Pages: landing
+      + leaderboard, register / login / verify-email, lobby + queue, table, match
+      and hand history, privacy. Protocol types generated from Rust (`ts-rs`).
+- [x] Table: four-colour deck, bets and pot, dealer button, decision clock, hand
+      log, bet sizing (min / ½ pot / pot / all-in, slider, keyboard F/C/R),
+      auto-muck toggle, result overlay with rating change. Usable at phone width.
+- [x] Reconnects automatically (snapshot rebuilds the table); "opened in another
+      tab" handling; table state is a pure reducer with unit tests (vitest).
+- [x] Browser tests (Playwright): two players sign up, queue, play a whole match
+      through the UI, see the result and their own-seat hand history; phone layout.
+- [x] `README.md` rewritten for the new project; `.env.example`.
+- [ ] Nice to have: sounds, animations, spectating, a hand replayer, per-player
+      profile pages.
 
 ### 4. Seasons & integrity
 - [ ] Monthly seasons; minimum matches to qualify.

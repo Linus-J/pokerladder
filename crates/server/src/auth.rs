@@ -223,16 +223,17 @@ pub struct MeResponse {
     pub name: String,
     pub rating: f64,
     pub email_verified: bool,
+    /// Whether this server only lets verified accounts queue.
+    pub verification_required: bool,
 }
 
-impl From<User> for MeResponse {
-    fn from(u: User) -> Self {
-        MeResponse {
-            id: u.id,
-            name: u.name,
-            rating: u.rating,
-            email_verified: u.email_verified,
-        }
+fn me_response(state: &AppState, u: User) -> MeResponse {
+    MeResponse {
+        id: u.id,
+        name: u.name,
+        rating: u.rating,
+        email_verified: u.email_verified,
+        verification_required: state.config.require_email_verification,
     }
 }
 
@@ -405,7 +406,7 @@ pub async fn login(
     let user = db::user_by_id(&state.db, id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("user {id} vanished"))?;
-    let mut res = Json(MeResponse::from(user)).into_response();
+    let mut res = Json(me_response(&state, user)).into_response();
     res.headers_mut()
         .insert(SET_COOKIE, session_cookie(&state, &token, SESSION_TTL));
     Ok(res)
@@ -443,8 +444,8 @@ pub async fn logout(
     Ok(res)
 }
 
-pub async fn me(AuthUser(user): AuthUser) -> Json<MeResponse> {
-    Json(user.into())
+pub async fn me(State(state): State<AppState>, AuthUser(user): AuthUser) -> Json<MeResponse> {
+    Json(me_response(&state, user))
 }
 
 #[cfg(test)]

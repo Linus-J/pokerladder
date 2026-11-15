@@ -54,7 +54,11 @@ export type WireEvent = { "type": "hand_started", number: number, level: number,
  */
 rank: number, description: string, } | { "type": "mucked", seat: number, } | { "type": "won", seat: number, amount: number, } | { "type": "ended", stacks: [number, number], } | { "type": "timed_out", seat: number, } | { "type": "match_over", winner: number, };
 
-export type MeResponse = { id: number, name: string, rating: number, email_verified: boolean, };
+export type MeResponse = { id: number, name: string, rating: number, email_verified: boolean, 
+/**
+ * Whether this server only lets verified accounts queue.
+ */
+verification_required: boolean, };
 
 export type RegisterResponse = { message: string, };
 

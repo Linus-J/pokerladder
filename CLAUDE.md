@@ -23,7 +23,11 @@ crates/server   authoritative game server: axum + tokio + sqlx/Postgres (Phase 2
   src/protocol.rs    WebSocket message types; `export_bindings` test writes
                      web/src/lib/protocol.ts (ts-rs)
   migrations/        sqlx migrations (embedded, run at startup)
-web/            (Phase 3) Svelte 5 + Vite + TypeScript SPA; only the generated protocol.ts so far
+web/            Svelte 5 + Vite + TypeScript SPA (Phase 3)
+  src/lib/table.ts       pure reducer: server messages -> table state (unit-tested)
+  src/lib/game.svelte.ts session + WebSocket (reconnects), app-wide state
+  src/lib/protocol.ts    GENERATED from crates/server/src/protocol.rs - don't edit
+  src/pages/, src/components/   UI; e2e/ Playwright tests
 ```
 
 ## Commands
@@ -33,9 +37,13 @@ web/            (Phase 3) Svelte 5 + Vite + TypeScript SPA; only the generated p
   — the server's `tests/api.rs` needs it (each test gets a fresh database).
 - `cargo test -q` — all tests (~30 s; the engine is built at opt-level 3 even in dev
   because the 124 MiB 2+2 table takes ~5 s to generate).
-- `cargo run -p pokerladder-server` — needs `DATABASE_URL`; optional `BIND_ADDR`,
-  `PUBLIC_URL`, `REQUIRE_EMAIL_VERIFICATION` (see `src/config.rs`). Verification links
-  are logged (no real mailer yet).
+- `cargo run -p pokerladder-server` — needs `DATABASE_URL`; other settings in
+  `.env.example`. Without `SMTP_URL` emails are logged. Serves `web/dist` if built.
+- Web (`cd web`): `npm run check` (types), `npm test` (vitest), `npm run build`,
+  `npm run dev` (needs the server run with `PUBLIC_URL=http://localhost:5173`),
+  `CHROMIUM=/usr/bin/chromium npm run e2e` (needs `npm run build` and
+  `cargo build -p pokerladder-server` first). After changing the protocol, run
+  `cargo test -p pokerladder-server export_bindings` to regenerate `protocol.ts`.
 - `cargo test -q -p pokerladder-engine --test evaluator -- --ignored` — exhaustive
   133M-hand table-vs-direct check (~25 s).
 - `cargo bench -p pokerladder-engine` — criterion evaluator benchmarks.

@@ -1,0 +1,30 @@
+[package]
+name = "pokerladder-server"
+version = "0.1.0"
+edition.workspace = true
+license-file.workspace = true
+
+[dependencies]
+pokerladder-engine = { path = "../engine" }
+anyhow = "1"
+argon2 = "0.5"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+rand = "0.10.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "time", "json", "macros", "migrate"] }
+time = { version = "0.3", features = ["formatting", "macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time", "signal"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ts-rs = "11"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tokio = { version = "1", features = ["test-util"] }
+tokio-tungstenite = "0.28"
+tower = { version = "0.5", features = ["util"] }

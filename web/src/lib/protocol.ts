@@ -9,7 +9,7 @@ export type ServerMsg = { "type": "hello", user_id: number, name: string, rating
  */
 ratings: [RatingChange, RatingChange] | null, } | { "type": "error", code: ErrorCode, message: string, } | { "type": "replaced" };
 
-export type ErrorCode = "bad_message" | "email_not_verified" | "already_in_match" | "not_in_match" | "illegal_action" | "unavailable";
+export type ErrorCode = "bad_message" | "email_not_verified" | "already_in_match" | "not_in_match" | "illegal_action" | "unavailable" | "rate_limited";
 
 export type MatchSnapshot = { match_id: number, 
 /**
@@ -53,3 +53,25 @@ export type WireEvent = { "type": "hand_started", number: number, level: number,
  * 1..=7462, higher wins.
  */
 rank: number, description: string, } | { "type": "mucked", seat: number, } | { "type": "won", seat: number, amount: number, } | { "type": "ended", stacks: [number, number], } | { "type": "timed_out", seat: number, } | { "type": "match_over", winner: number, };
+
+export type MeResponse = { id: number, name: string, rating: number, email_verified: boolean, };
+
+export type RegisterResponse = { message: string, };
+
+export type LeaderboardRow = { name: string, rating: number, rated_matches: number, };
+
+export type MatchSummary = { id: number, opponent: string, 
+/**
+ * `in_progress`, `finished` or `abandoned`.
+ */
+status: string, 
+/**
+ * `None` unless finished.
+ */
+won: boolean | null, rating_before: number | null, rating_after: number | null, hands_played: number | null, started_at: string, };
+
+export type HandHistory = { number: number, started_at: string, 
+/**
+ * PokerStars-style text from this player's seat.
+ */
+text: string, };

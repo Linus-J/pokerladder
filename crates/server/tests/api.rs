@@ -15,6 +15,7 @@ use pokerladder_server::config::Config;
 use pokerladder_server::db::{self, PgStore};
 use pokerladder_server::mail::CaptureMailer;
 use pokerladder_server::protocol::{ClientMsg, ErrorCode, ServerMsg, WireAction, WireEvent};
+use pokerladder_server::ratelimit::RateLimits;
 use pokerladder_server::table::{MatchFinish, MatchStore, Timing};
 use pokerladder_server::{AppState, router};
 use rand::RngExt;
@@ -40,6 +41,11 @@ fn app(db: PgPool, require_verification: bool) -> App {
         public_url: ORIGIN.into(),
         secure_cookies: false,
         require_email_verification: require_verification,
+        smtp_url: None,
+        mail_from: "test <t@localhost>".into(),
+        static_dir: None,
+        trusted_proxy_header: None,
+        rate_limits: RateLimits::STANDARD,
     };
     let timing = Timing {
         between_hands: Duration::from_millis(5),
@@ -103,9 +109,8 @@ async fn signup(app: &App, name: &str) -> String {
         None,
     )
     .await;
-    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
-    let link = app.mail.link_for(&email).unwrap();
-    let token = link.split("token=").nth(1).unwrap();
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let token = app.mail.token_for(&email).unwrap();
     let r = call(
         app,
         "POST",
@@ -143,9 +148,14 @@ async fn account_lifecycle(db: PgPool) {
         None,
     )
     .await;
-    assert_eq!(r.status, StatusCode::CREATED);
-    assert_eq!(r.body["email_verified"], false);
-    assert_eq!(r.body["rating"], 1500.0);
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let accepted = r.body.clone();
+    assert!(
+        accepted["message"]
+            .as_str()
+            .unwrap()
+            .contains("Check your email")
+    );
 
     // Names and emails are unique ignoring case.
     let r = call(
@@ -160,6 +170,8 @@ async fn account_lifecycle(db: PgPool) {
         (r.status, r.body["error"].as_str()),
         (StatusCode::CONFLICT, Some("name_taken"))
     );
+    // A registered email gets exactly the same response as a new one (no account
+    // enumeration); its owner is told by email instead, and no account is created.
     let r = call(
         &app,
         "POST",
@@ -168,10 +180,15 @@ async fn account_lifecycle(db: PgPool) {
         None,
     )
     .await;
-    assert_eq!(
-        (r.status, r.body["error"].as_str()),
-        (StatusCode::CONFLICT, Some("email_taken"))
-    );
+    assert_eq!((r.status, &r.body), (StatusCode::ACCEPTED, &accepted));
+    let notice = app.mail.last_to("A@X.io").unwrap();
+    assert!(notice.body.contains("already has one"), "{}", notice.body);
+    assert!(!notice.body.contains("token="));
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(users, 1);
     // Validation.
     for (body, code) in [
         (reg("bad name", "c@x.io", "longenough"), "bad_name"),
@@ -244,9 +261,13 @@ async fn account_lifecycle(db: PgPool) {
     )
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
-    let link = app.mail.link_for("a@x.io").unwrap();
-    assert!(link.starts_with("http://localhost:8080/verify-email?token="));
-    let token = link.split("token=").nth(1).unwrap();
+    let mail = app.mail.last_to("a@x.io").unwrap();
+    assert!(
+        mail.body
+            .contains("http://localhost:8080/verify-email?token=")
+    );
+    let token = app.mail.token_for("a@x.io").unwrap();
+    let token = token.as_str();
     let r = call(
         &app,
         "POST",
@@ -505,7 +526,7 @@ async fn unverified_players_cannot_queue(db: PgPool) {
         None,
     )
     .await;
-    assert_eq!(r.status, StatusCode::CREATED);
+    assert_eq!(r.status, StatusCode::ACCEPTED);
     let cookie = login(&app, "dave", "longenough").await.unwrap();
     let mut ws = ws_connect(addr, Some(&cookie), None).await.unwrap();
     recv(&mut ws).await; // hello
@@ -672,4 +693,176 @@ async fn two_players_queue_play_a_match_and_get_rated(db: PgPool) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("players still seated after the match");
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn auth_endpoints_are_rate_limited(db: PgPool) {
+    let app = app(db, true);
+    // Per account: 10 attempts at once, whatever the password.
+    for _ in 0..10 {
+        let r = call(
+            &app,
+            "POST",
+            "/api/login",
+            json!({"login": "victim", "password": "guess1234"}),
+            None,
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    }
+    let r = call(
+        &app,
+        "POST",
+        "/api/login",
+        json!({"login": "VICTIM ", "password": "guess1234"}),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (r.status, r.body["error"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("rate_limited"))
+    );
+    // Per IP (all requests here come from the same "unknown" address).
+    let r = call(
+        &app,
+        "POST",
+        "/api/login",
+        json!({"login": "other", "password": "guess1234"}),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    for i in 0..10 {
+        let body = json!({"name": format!("u{i}"), "email": format!("u{i}@x.io"), "password": "longenough"});
+        let r = call(&app, "POST", "/api/register", body, None).await;
+        assert_eq!(r.status, StatusCode::ACCEPTED);
+    }
+    let body = json!({"name": "u10", "email": "u10@x.io", "password": "longenough"});
+    let r = call(&app, "POST", "/api/register", body, None).await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn players_see_only_their_own_histories(db: PgPool) {
+    let app = app(db.clone(), true);
+    let alice = signup(&app, "alice").await;
+    let bob = signup(&app, "bob").await;
+    let eve = signup(&app, "eve").await;
+    // Play a real match between alice (1) and bob (2).
+    let addr = serve(&app).await;
+    let mut sockets = vec![];
+    for cookie in [&alice, &bob] {
+        let mut ws = ws_connect(addr, Some(cookie), Some(ORIGIN)).await.unwrap();
+        recv(&mut ws).await;
+        send(&mut ws, &ClientMsg::QueueJoin).await;
+        sockets.push(ws);
+    }
+    let players: Vec<_> = sockets
+        .into_iter()
+        .map(|ws| tokio::spawn(play(ws)))
+        .collect();
+    for p in players {
+        p.await.unwrap();
+    }
+    let r = call(&app, "GET", "/api/matches", Value::Null, Some(&alice)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let list = r.body.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    let m = &list[0];
+    assert_eq!(m["opponent"], "bob");
+    assert_eq!(m["status"], "finished");
+    let won = m["won"].as_bool().unwrap();
+    assert_eq!(
+        m["rating_after"].as_f64().unwrap(),
+        if won { 1516.0 } else { 1484.0 }
+    );
+    let id = m["id"].as_i64().unwrap();
+
+    let r = call(
+        &app,
+        "GET",
+        &format!("/api/matches/{id}/hands"),
+        Value::Null,
+        Some(&alice),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let hands = r.body.as_array().unwrap();
+    assert_eq!(hands.len() as i64, m["hands_played"].as_i64().unwrap());
+    for h in hands {
+        let text = h["text"].as_str().unwrap();
+        assert!(text.contains("Dealt to alice"));
+        assert!(!text.contains("Dealt to bob"));
+    }
+    // Not a participant: indistinguishable from a match that doesn't exist.
+    let r = call(
+        &app,
+        "GET",
+        &format!("/api/matches/{id}/hands"),
+        Value::Null,
+        Some(&eve),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = call(
+        &app,
+        "GET",
+        "/api/matches/999999/hands",
+        Value::Null,
+        Some(&eve),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = call(&app, "GET", "/api/matches", Value::Null, None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let r = call(&app, "GET", "/api/leaderboard", Value::Null, None).await;
+    assert_eq!(r.body.as_array().unwrap().len(), 2);
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn serves_the_web_client_with_security_headers(db: PgPool) {
+    let dir = std::env::temp_dir().join(format!("pl-static-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.html"), "<!doctype html>app").unwrap();
+    std::fs::write(dir.join("assets/x.js"), "1").unwrap();
+    let mut a = app(db, true);
+    let mut config = a.state.config.clone();
+    config.static_dir = Some(dir.clone());
+    let state = AppState::new(
+        config,
+        a.state.db.clone(),
+        a.mail.clone(),
+        MatchConfig::standard(),
+        Timing::STANDARD,
+    );
+    a.router = router(state);
+    let get = |path: &'static str| {
+        let router = a.router.clone();
+        async move {
+            router
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+        }
+    };
+    let res = get("/assets/x.js").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    // Client-side routes fall back to index.html.
+    let res = get("/verify-email?token=abc").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let h = res.headers().clone();
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], b"<!doctype html>app");
+    assert!(
+        h["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("default-src 'self'")
+    );
+    assert_eq!(h["referrer-policy"], "no-referrer");
+    assert_eq!(h["x-frame-options"], "DENY");
+    assert_eq!(h["x-content-type-options"], "nosniff");
+    // Unknown API paths are a 404, not the app.
+    assert_eq!(get("/api/nope").await.status(), StatusCode::NOT_FOUND);
+    std::fs::remove_dir_all(dir).unwrap();
 }

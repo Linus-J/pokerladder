@@ -1,6 +1,7 @@
 //! Server configuration, from environment variables.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use anyhow::{Context, bail};
 
@@ -18,6 +19,17 @@ pub struct Config {
     pub secure_cookies: bool,
     /// `REQUIRE_EMAIL_VERIFICATION` (default `true`): only verified accounts may queue.
     pub require_email_verification: bool,
+    /// `SMTP_URL`, e.g. `smtps://user:pass@smtp.example.com:465`. Without it, emails
+    /// go to the log — allowed only when `PUBLIC_URL` is plain http (development).
+    pub smtp_url: Option<String>,
+    /// `MAIL_FROM`, e.g. `Pokerladder <noreply@pokerladder.example>`.
+    pub mail_from: String,
+    /// `STATIC_DIR`: the built web client (default `web/dist`, if it exists).
+    pub static_dir: Option<PathBuf>,
+    /// `TRUSTED_PROXY_HEADER`, e.g. `X-Forwarded-For`: set only when a reverse proxy
+    /// in front of the server always sets it; used to rate-limit by client IP.
+    pub trusted_proxy_header: Option<String>,
+    pub rate_limits: crate::ratelimit::RateLimits,
 }
 
 impl Config {
@@ -40,12 +52,27 @@ impl Config {
             Some("false" | "0") => false,
             Some(v) => bail!("REQUIRE_EMAIL_VERIFICATION must be true or false, not {v:?}"),
         };
+        let smtp_url = var("SMTP_URL");
+        if smtp_url.is_none() && public_url.starts_with("https://") {
+            bail!("SMTP_URL is required in production (PUBLIC_URL is https)");
+        }
+        let mail_from =
+            var("MAIL_FROM").unwrap_or_else(|| "Pokerladder <noreply@localhost>".into());
+        let static_dir = match var("STATIC_DIR") {
+            Some(d) => Some(PathBuf::from(d)),
+            None => Some(PathBuf::from("web/dist")).filter(|d| d.join("index.html").exists()),
+        };
         Ok(Config {
             database_url,
             bind,
             secure_cookies: public_url.starts_with("https://"),
             public_url,
             require_email_verification,
+            smtp_url,
+            mail_from,
+            static_dir,
+            trusted_proxy_header: var("TRUSTED_PROXY_HEADER"),
+            rate_limits: crate::ratelimit::RateLimits::STANDARD,
         })
     }
 }

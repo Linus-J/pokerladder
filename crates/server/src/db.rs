@@ -77,6 +77,22 @@ pub async fn login_lookup(db: &PgPool, login: &str) -> anyhow::Result<Option<(Us
     .await?)
 }
 
+pub async fn name_taken(db: &PgPool, name: &str) -> anyhow::Result<bool> {
+    Ok(
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE lower(name) = lower($1))")
+            .bind(name)
+            .fetch_one(db)
+            .await?,
+    )
+}
+
+pub async fn user_email(db: &PgPool, id: UserId) -> anyhow::Result<String> {
+    Ok(sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_one(db)
+        .await?)
+}
+
 pub async fn user_by_id(db: &PgPool, id: UserId) -> anyhow::Result<Option<User>> {
     let row: Option<UserRow> = sqlx::query_as(
         "SELECT id, name, rating, email_verified_at IS NOT NULL FROM users WHERE id = $1",
@@ -164,7 +180,7 @@ pub async fn verify_email(db: &PgPool, token_hash: &[u8]) -> anyhow::Result<bool
     Ok(true)
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 pub struct LeaderboardRow {
     pub name: String,
     pub rating: f64,

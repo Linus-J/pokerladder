@@ -86,6 +86,7 @@ pub enum ErrorCode {
     NotInMatch,
     IllegalAction,
     Unavailable,
+    RateLimited,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -461,6 +462,11 @@ mod tests {
             WireLegal::decl(),
             WirePublicState::decl(),
             WireEvent::decl(),
+            crate::auth::MeResponse::decl(),
+            crate::auth::RegisterResponse::decl(),
+            crate::db::LeaderboardRow::decl(),
+            crate::history::MatchSummary::decl(),
+            crate::history::HandHistory::decl(),
         ];
         let mut out = String::from(
             "// Generated from crates/server/src/protocol.rs by the `export_bindings` test.\n\

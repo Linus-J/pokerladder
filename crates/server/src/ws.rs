@@ -24,6 +24,12 @@ const PING_EVERY: Duration = Duration::from_secs(20);
 /// A connection that sends nothing (not even a pong) for this long is dead.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_MESSAGE: usize = 4096;
+/// Client messages: a burst of 20, refilling at 10 per second. Far above what a
+/// person clicking buttons sends; beyond it messages are refused, and a client that
+/// keeps going is disconnected.
+const MSG_BURST: f64 = 20.0;
+const MSG_PER_SEC: f64 = 10.0;
+const MAX_REFUSED: u32 = 100;
 /// A send that takes longer means the client has stopped reading: drop it.
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -115,13 +121,28 @@ async fn run(state: AppState, user: User, socket: WebSocket) {
         let _ = s.cmd.send(MatchCmd::Connect { seat: s.seat, conn }).await;
     }
 
+    let (mut tokens, mut refilled, mut refused) = (MSG_BURST, tokio::time::Instant::now(), 0u32);
     loop {
         let frame = tokio::select! {
             () = conn.kill.cancelled() => break,
             f = tokio::time::timeout(IDLE_TIMEOUT, stream.next()) => f,
         };
         match frame {
-            Ok(Some(Ok(Message::Text(text)))) => on_message(&state, &user, &conn, &text).await,
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let now = tokio::time::Instant::now();
+                tokens = (tokens + (now - refilled).as_secs_f64() * MSG_PER_SEC).min(MSG_BURST);
+                refilled = now;
+                if tokens >= 1.0 {
+                    tokens -= 1.0;
+                    on_message(&state, &user, &conn, &text).await;
+                } else {
+                    refused += 1;
+                    if refused > MAX_REFUSED {
+                        break;
+                    }
+                    conn.send(error(ErrorCode::RateLimited, "slow down"));
+                }
+            }
             Ok(Some(Ok(Message::Binary(_)))) => {
                 conn.send(error(ErrorCode::BadMessage, "text frames only"));
             }

@@ -28,6 +28,10 @@ use time::OffsetDateTime;
 
 use crate::AppState;
 use crate::db::{self, Conflict, CreateUser, User};
+use crate::mail;
+use crate::protocol::UserId;
+use crate::ratelimit::ClientIp;
+use ts_rs::TS;
 
 pub const SESSION_COOKIE: &str = "pl_session";
 const SESSION_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
@@ -212,8 +216,9 @@ fn session_cookie(state: &AppState, token: &str, max_age: Duration) -> HeaderVal
     HeaderValue::from_str(&cookie).expect("cookie is ASCII")
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, TS)]
 pub struct MeResponse {
+    #[ts(type = "number")]
     pub id: i64,
     pub name: String,
     pub rating: f64,
@@ -238,10 +243,31 @@ pub struct RegisterRequest {
     pub password: String,
 }
 
+#[derive(Serialize, Deserialize, TS)]
+pub struct RegisterResponse {
+    pub message: String,
+}
+
+fn too_many() -> ApiError {
+    ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limited",
+        "too many attempts; wait a minute and try again",
+    )
+}
+
+/// Creates an account and emails a verification link. An email that already has an
+/// account gets the same response (and its owner a heads-up email), so this endpoint
+/// doesn't reveal which emails are registered. Names are public, so a taken name is
+/// reported.
 pub async fn register(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<RegisterRequest>,
-) -> Result<(StatusCode, Json<MeResponse>), ApiError> {
+) -> Result<(StatusCode, Json<RegisterResponse>), ApiError> {
+    if !state.limiters.register_ip.check(&ip) {
+        return Err(too_many());
+    }
     let bad = |code, msg: &str| ApiError::new(StatusCode::BAD_REQUEST, code, msg);
     if !valid_name(&req.name) {
         return Err(bad("bad_name", "names are 1-20 letters, digits, _ or -"));
@@ -253,31 +279,60 @@ pub async fn register(
     if !PASSWORD_LEN.contains(&req.password.chars().count()) {
         return Err(bad("bad_password", "passwords are 8-128 characters"));
     }
+    let name_taken = || ApiError::new(StatusCode::CONFLICT, "name_taken", "that name is taken");
+    if db::name_taken(&state.db, &req.name).await? {
+        return Err(name_taken());
+    }
     let hash = hash_password(req.password).await?;
-    let id = match db::create_user(&state.db, &req.name, &email, &hash).await? {
-        CreateUser::Created(id) => id,
-        CreateUser::Taken(what) => {
-            let (code, msg) = match what {
-                Conflict::Name => ("name_taken", "that name is taken"),
-                Conflict::Email => ("email_taken", "that email is already registered"),
-            };
-            return Err(ApiError::new(StatusCode::CONFLICT, code, msg));
+    match db::create_user(&state.db, &req.name, &email, &hash).await? {
+        CreateUser::Created(id) => send_verification(&state, id, &email, &req.name).await?,
+        CreateUser::Taken(Conflict::Name) => return Err(name_taken()),
+        CreateUser::Taken(Conflict::Email) => {
+            let login = format!("{}/login", state.config.public_url);
+            state.mailer.send(mail::already_registered(&email, &login));
         }
-    };
+    }
+    let message = "Check your email for a link to confirm your account.".to_owned();
+    Ok((StatusCode::ACCEPTED, Json(RegisterResponse { message })))
+}
+
+async fn send_verification(
+    state: &AppState,
+    user: UserId,
+    email: &str,
+    name: &str,
+) -> anyhow::Result<()> {
     let token = new_token();
     db::create_verification(
         &state.db,
-        id,
+        user,
         &token_hash(&token),
         expires_in(VERIFICATION_TTL),
     )
     .await?;
     let link = format!("{}/verify-email?token={token}", state.config.public_url);
-    state.mailer.send_verification(&email, &req.name, &link);
-    let user = db::user_by_id(&state.db, id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("new user {id} vanished"))?;
-    Ok((StatusCode::CREATED, Json(user.into())))
+    state.mailer.send(mail::verification(email, name, &link));
+    Ok(())
+}
+
+/// Emails a fresh verification link to the logged-in user (e.g. the first expired).
+pub async fn resend_verification(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> Result<StatusCode, ApiError> {
+    if user.email_verified {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    if !state
+        .limiters
+        .register_ip
+        .check(&format!("resend:{}", user.id))
+    {
+        return Err(too_many());
+    }
+    let email = db::user_email(&state.db, user.id).await?;
+    send_verification(&state, user.id, &email, &user.name).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -287,8 +342,12 @@ pub struct VerifyRequest {
 
 pub async fn verify_email(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<VerifyRequest>,
 ) -> Result<StatusCode, ApiError> {
+    if !state.limiters.verify_ip.check(&ip) {
+        return Err(too_many());
+    }
     if db::verify_email(&state.db, &token_hash(&req.token)).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -309,8 +368,18 @@ pub struct LoginRequest {
 
 pub async fn login(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, ApiError> {
+    // Both limits are checked (and charged) before the password is.
+    let ip_ok = state.limiters.login_ip.check(&ip);
+    let account_ok = state
+        .limiters
+        .login_account
+        .check(&req.login.trim().to_lowercase());
+    if !(ip_ok && account_ok) {
+        return Err(too_many());
+    }
     if req.login.len() > 254 || req.password.len() > 4 * *PASSWORD_LEN.end() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,

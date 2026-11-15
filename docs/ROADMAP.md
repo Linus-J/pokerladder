@@ -94,6 +94,16 @@ compare within a row rather than across runs):
 Possible later improvements: parallel generation (rayon), or an on-disk cache with
 invariant validation to cut startup time.
 
+## Status (2026-11-15)
+
+Phase 1 (engine) complete on branch `rewrite`. Next: Phase 2 (server). Suggested
+order: workspace crate + config → Postgres schema (users, sessions, matches, hands,
+audit events, ratings) via sqlx migrations → auth (argon2, email verification,
+sessions) → WebSocket protocol types (shared with the TS client via `ts-rs`) → match
+actor (one tokio task per match, owning `sng::Match`, timers, reconnects) →
+matchmaking queue → rating updates in the result transaction. See `CLAUDE.md` for the
+engine contracts the server must respect.
+
 ## Phases
 
 ### 0. Hygiene

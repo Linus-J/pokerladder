@@ -1,0 +1,16 @@
+# Local Postgres for development and the server's database tests:
+#   docker compose up -d db
+#   export DATABASE_URL=postgres://pokerladder:pokerladder@localhost:55432/pokerladder
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: pokerladder
+      POSTGRES_PASSWORD: pokerladder
+      POSTGRES_DB: pokerladder
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:

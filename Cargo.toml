@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/engine"]
+
+[workspace.package]
+edition = "2024"
+license-file = "LICENSE"
+
+# The Two Plus Two table is generated at startup; unoptimised builds make that (and the
+# exhaustive tests) painfully slow, so the engine is always optimised, even in dev/test.
+[profile.dev.package.pokerladder-engine]
+opt-level = 3
+
+[profile.bench]
+debug = true

@@ -3,11 +3,13 @@
 
 pub mod card;
 pub mod eval;
+pub mod history;
 pub mod holdem;
 pub mod sng;
 
 pub use card::{Card, Deck};
 pub use eval::{Category, HandRank, evaluate};
+pub use history::{HistoryError, HistoryMeta, Viewer, format_hand};
 pub use holdem::{
     Action, Chips, ConfigError, Event, Hand, HandConfig, HandError, Legal, PublicState, Seat,
     Street, Visibility,

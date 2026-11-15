@@ -12,6 +12,7 @@ use std::time::Duration;
 use crate::card::Deck;
 use crate::holdem::{
     Action, Chips, ConfigError, Event, Hand, HandConfig, HandError, MAX_TOTAL_CHIPS, Seat,
+    Visibility,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -108,6 +109,17 @@ pub enum MatchEvent {
     },
 }
 
+impl MatchEvent {
+    /// Who may see this event. Always filter with this (never forward `MatchEvent`s
+    /// wholesale): `Hand(HoleCards)` is private.
+    pub fn visibility(&self) -> Visibility {
+        match self {
+            MatchEvent::Hand(e) => e.visibility(),
+            _ => Visibility::Public,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MatchError {
     HandInProgress,
@@ -153,22 +165,27 @@ impl Match {
         if config.starting_stack == 0 {
             return Err(ConfigError::EmptyStack);
         }
-        if config.levels.is_empty() || config.hands_per_level == 0 {
-            return Err(ConfigError::BadSchedule);
-        }
-        if config
-            .levels
-            .iter()
-            .any(|l| l.small_blind == 0 || l.small_blind >= l.big_blind)
-        {
-            return Err(ConfigError::BadBlinds);
-        }
-        if config
+        let Some(total) = config
             .starting_stack
             .checked_mul(2)
-            .is_none_or(|t| t > MAX_TOTAL_CHIPS)
-        {
+            .filter(|&t| t <= MAX_TOTAL_CHIPS)
+        else {
             return Err(ConfigError::TooManyChips);
+        };
+        // Same per-level rules `Hand::new` enforces, so a match can't get stuck on a
+        // level it can never deal.
+        for l in &config.levels {
+            if l.small_blind == 0 || l.small_blind >= l.big_blind {
+                return Err(ConfigError::BadBlinds);
+            }
+            if l.big_blind > MAX_TOTAL_CHIPS {
+                return Err(ConfigError::TooManyChips);
+            }
+        }
+        // The last level must force everyone all-in, so every match ends.
+        let ends = config.levels.last().is_some_and(|l| l.big_blind >= total);
+        if !ends || config.hands_per_level == 0 || config.time.topup_every_hands == 0 {
+            return Err(ConfigError::BadSchedule);
         }
         Ok(Match {
             stacks: [config.starting_stack; 2],
@@ -227,12 +244,6 @@ impl Match {
         if self.hand.is_some() {
             return Err(MatchError::HandInProgress);
         }
-        let tc = self.config.time;
-        if self.hands_played > 0 && self.hands_played.is_multiple_of(tc.topup_every_hands.max(1)) {
-            for bank in &mut self.banks {
-                *bank += tc.bank_topup;
-            }
-        }
         let level_index = self.level_index();
         let Level {
             small_blind,
@@ -249,7 +260,14 @@ impl Match {
             },
             deck,
         )?;
+        // Only now that the hand exists: a failed start must not top up the banks.
         self.next_button = button.other();
+        let tc = self.config.time;
+        if self.hands_played > 0 && self.hands_played.is_multiple_of(tc.topup_every_hands) {
+            for bank in &mut self.banks {
+                *bank = bank.saturating_add(tc.bank_topup);
+            }
+        }
 
         let mut out = vec![MatchEvent::HandStarted {
             number: self.hands_played + 1,
@@ -266,16 +284,27 @@ impl Match {
         Ok(out)
     }
 
-    /// Applies a player's action. `elapsed` is how long they took, as measured by the
-    /// server; anything beyond `per_action` is drawn from their bank. On error nothing
-    /// changes (including the bank).
+    /// Applies a player's action. Anything beyond `per_action` is drawn from their bank.
+    ///
+    /// `elapsed` must be measured by the server from the moment this decision was
+    /// offered, **not** reset by rejected actions — otherwise a player could stall
+    /// forever by sending illegal actions. An action arriving after
+    /// [`time_allowed`](Self::time_allowed) is treated as a [`timeout`](Self::timeout).
+    /// On error nothing changes (including the bank).
     pub fn act(
         &mut self,
         seat: Seat,
         action: Action,
         elapsed: Duration,
     ) -> Result<Vec<MatchEvent>, MatchError> {
+        if self.winner.is_some() {
+            return Err(MatchError::MatchOver);
+        }
+        let late = elapsed > self.time_allowed(seat);
         let hand = self.hand.as_mut().ok_or(MatchError::NoHandInProgress)?;
+        if late && hand.to_act() == Some(seat) {
+            return self.timeout(seat);
+        }
         let events = hand.act(seat, action)?;
         let over = elapsed.saturating_sub(self.config.time.per_action);
         let bank = &mut self.banks[seat.index()];
@@ -288,6 +317,9 @@ impl Match {
 
     /// The server's deadline for `seat` passed: empty its bank and check or fold.
     pub fn timeout(&mut self, seat: Seat) -> Result<Vec<MatchEvent>, MatchError> {
+        if self.winner.is_some() {
+            return Err(MatchError::MatchOver);
+        }
         let hand = self.hand.as_mut().ok_or(MatchError::NoHandInProgress)?;
         let legal = hand.legal().ok_or(MatchError::NoHandInProgress)?;
         if legal.seat != seat {
@@ -457,5 +489,85 @@ mod tests {
         let mut bad = MatchConfig::standard();
         bad.levels.clear();
         assert_eq!(Match::new(bad, Zero).err(), Some(ConfigError::BadSchedule));
+    }
+
+    #[test]
+    fn failed_start_does_not_top_up_banks() {
+        let mut m = Match::new(MatchConfig::standard(), Zero).unwrap();
+        for n in 1..=10 {
+            fold_hand(&mut m, n);
+        }
+        let mut short = deck(99);
+        for _ in 0..45 {
+            short.deal();
+        }
+        assert!(m.start_hand(short).is_err());
+        assert_eq!(m.time_banks(), [Duration::from_secs(60); 2]);
+        m.start_hand(deck(100)).unwrap();
+        assert_eq!(m.time_banks(), [Duration::from_secs(70); 2]);
+    }
+
+    #[test]
+    fn schedules_that_could_stall_are_rejected() {
+        let base = MatchConfig::standard;
+        let mut c = base();
+        c.levels.pop(); // last level 1000/2000 < 3000 chips: may never end
+        assert_eq!(Match::new(c, Zero).err(), Some(ConfigError::BadSchedule));
+        let mut c = base();
+        c.levels[1].big_blind = MAX_TOTAL_CHIPS + 1;
+        assert_eq!(Match::new(c, Zero).err(), Some(ConfigError::TooManyChips));
+        let mut c = base();
+        c.time.topup_every_hands = 0;
+        assert_eq!(Match::new(c, Zero).err(), Some(ConfigError::BadSchedule));
+    }
+
+    #[test]
+    fn late_action_is_a_timeout() {
+        let mut m = Match::new(MatchConfig::standard(), Zero).unwrap();
+        m.start_hand(deck(1)).unwrap();
+        let ev = m.act(Zero, Action::AllIn, Duration::from_secs(76)).unwrap();
+        assert_eq!(ev[0], MatchEvent::TimedOut { seat: Zero });
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            MatchEvent::Hand(Event::Acted {
+                action: Action::Fold,
+                ..
+            })
+        )));
+        assert_eq!(m.time_banks()[0], Duration::ZERO);
+    }
+
+    #[test]
+    fn hole_cards_are_private_match_events() {
+        let mut m = Match::new(MatchConfig::standard(), Zero).unwrap();
+        let ev = m.start_hand(deck(1)).unwrap();
+        let private: Vec<_> = ev
+            .iter()
+            .filter(|e| e.visibility() != Visibility::Public)
+            .collect();
+        assert_eq!(private.len(), 2);
+        assert!(
+            private
+                .iter()
+                .all(|e| matches!(e, MatchEvent::Hand(Event::HoleCards { .. })))
+        );
+    }
+
+    #[test]
+    fn calls_after_the_match_report_match_over() {
+        let mut m = Match::new(MatchConfig::standard(), Zero).unwrap();
+        let mut seed = 0;
+        while m.winner().is_none() {
+            seed += 1;
+            m.start_hand(deck(seed)).unwrap();
+            while let Some(seat) = m.hand().and_then(|h| h.to_act()) {
+                m.act(seat, Action::AllIn, Duration::ZERO).unwrap();
+            }
+        }
+        assert_eq!(
+            m.act(Zero, Action::Check, Duration::ZERO),
+            Err(MatchError::MatchOver)
+        );
+        assert_eq!(m.timeout(Zero), Err(MatchError::MatchOver));
     }
 }

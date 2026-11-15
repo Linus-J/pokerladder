@@ -120,12 +120,20 @@ invariant validation to cut startup time.
 - [x] Property tests (4000 random hands): chip conservation every step, illegal
       actions rejected without state change, independent min-raise model, event log
       balances, termination.
-- [ ] Hand-history output (PokerStars-style text so existing replayers work).
+- [x] Hand-history output (`history::format_hand`): PokerStars-style text with
+      Player / Spectator / Audit views (mucked cards only in Audit). Header uses the
+      site name "Pokerladder"; replayers that key on a specific site prefix may need
+      a small converter.
 
 ### 2. Server
 - [ ] Accounts: argon2 hashes, server-side email verification, session tokens.
 - [ ] Matchmaking queue (server pairs players by rating; players can't pick opponents).
 - [ ] One tokio task (actor) per match; WebSocket protocol with typed messages.
+- [ ] Measure think time from when a decision is offered (never reset on rejected
+      actions) and pass it to `Match::act`; schedule `Match::timeout` at
+      `time_allowed`. Forward only events allowed by `MatchEvent::visibility`.
+- [ ] Display names restricted to `[A-Za-z0-9_-]{1,20}` (histories also reject
+      control characters).
 - [ ] Action timer + time bank; disconnect → time bank then auto-fold (never auto-win);
       reconnect resumes the match.
 - [ ] Persist hands and match results; rating update in the same DB transaction.

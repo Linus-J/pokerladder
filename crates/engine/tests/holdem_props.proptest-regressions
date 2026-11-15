@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9816f5b34b60027c10a2e40f6e077e561c635a777ab1a6c8f36ee07e898077bd # shrinks to config = HandConfig { button: Zero, stacks: [1, 2], small_blind: 1, big_blind: 2 }, seed = 0, choices = [(0, 0)]
+cc 1e67328dc3c3a47a6da99eefe35808761125cc872d2c0eb72ed0e755a65956db # shrinks to config = HandConfig { button: One, stacks: [1, 1], small_blind: 1, big_blind: 1 }, seed = 0, choices = [(0, 0)]
+cc 9f22b636f4751b14d3c553e932c8acc296ee1725e214a4b3e5fa9c9a7b6b67ec # shrinks to config = HandConfig { button: One, stacks: [162, 162], small_blind: 1, big_blind: 2 }, seed = 0, choices = [(116, 0), (132, 0)]

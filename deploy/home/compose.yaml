@@ -1,0 +1,23 @@
+# Production database for a single-machine deployment (see deploy/home/README.md).
+# Separate from the development database in the repository root: its own project
+# name, volume and port, and a real password from the environment.
+name: pokerladder-prod
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pokerladder
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: pokerladder
+    ports:
+      - "127.0.0.1:55433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pokerladder -d pokerladder"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  pgdata:

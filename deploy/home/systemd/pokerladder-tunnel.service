@@ -1,0 +1,15 @@
+[Unit]
+Description=Cloudflare Tunnel for pokerladder.app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# TUNNEL_TOKEN (from the Cloudflare dashboard) lives in its own file, so the game
+# server's secrets aren't in cloudflared's environment and vice versa.
+EnvironmentFile=%h/.config/pokerladder/tunnel.env
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

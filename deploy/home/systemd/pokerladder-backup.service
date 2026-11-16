@@ -1,0 +1,8 @@
+[Unit]
+Description=Pokerladder database backup
+Requires=pokerladder-db.service
+After=pokerladder-db.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/Projects/pokerladder/deploy/home/backup.sh

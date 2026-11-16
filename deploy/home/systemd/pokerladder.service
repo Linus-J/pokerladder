@@ -1,0 +1,17 @@
+[Unit]
+Description=Pokerladder game server
+Requires=pokerladder-db.service
+After=pokerladder-db.service
+
+[Service]
+EnvironmentFile=%h/.config/pokerladder/pokerladder.env
+WorkingDirectory=%h/Projects/pokerladder
+ExecStart=%h/Projects/pokerladder/target/release/pokerladder-server
+# The server shuts down gracefully on Ctrl-C (SIGINT).
+KillSignal=SIGINT
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

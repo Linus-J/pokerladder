@@ -1,0 +1,15 @@
+[Unit]
+Description=Pokerladder Postgres (docker compose)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=%h/.config/pokerladder/pokerladder.env
+ExecStart=/usr/bin/docker compose -f %h/Projects/pokerladder/deploy/home/compose.yaml up -d --wait
+ExecStop=/usr/bin/docker compose -f %h/Projects/pokerladder/deploy/home/compose.yaml stop
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

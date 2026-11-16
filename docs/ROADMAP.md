@@ -162,15 +162,36 @@ privacy notice (draft in the app) and the competition terms (not yet written).
       cards incl. folded/mucked) plus rendered histories for each seat and the audit
       view. Match result + Elo update (K=32) in one transaction, idempotent on retry.
       Matches interrupted by a restart are marked `abandoned` (unrated).
-- [x] SMTP mail (`SMTP_URL`, lettre, sent in the background); the server refuses
-      to start with an https `PUBLIC_URL` and no SMTP, and checks the SMTP login at
-      startup. Without SMTP, emails are logged (development).
-- [x] Rate limits (in-memory token buckets): login per IP and per account,
-      register, verify-email, resend-verification; per-connection WebSocket message
-      limit (burst 20, 10/s; disconnect after 100 refused). Argon2 capped at one hash
-      per CPU. Client IP from the peer or `TRUSTED_PROXY_HEADER`.
-- [x] Registration doesn't reveal registered emails: the same 202 response, and
-      the address owner gets an "already registered" email instead.
+- [x] SMTP mail (`SMTP_URL`, lettre, sent in the background, at most 8 at once);
+      the server refuses to start with an https `PUBLIC_URL` and no SMTP, and logs an
+      error (but still starts) if the SMTP login check fails. Without SMTP, emails
+      are logged (development). Per recipient: at most 3 verification/reset emails
+      per 2 hours, and separately 1 "already registered" notice per 6 hours (anyone
+      can trigger those, so they mustn't use up the owner's allowance).
+- [x] Rate limits (in-memory token buckets, single process): login per IP (IPv6 per
+      /64), failed logins per account, register, verify-email, password reset;
+      per-connection WebSocket message limit (burst 20, 10/s; disconnect after 100
+      refused in a row). Argon2 capped at one hash per CPU; oversized logins are
+      refused before any limiter. Client IP from the peer or `TRUSTED_PROXY_HEADER`
+      (rightmost entry; see `.env.example` for CDN setups).
+      The per-account bucket is keyed by the login as typed (name and email are
+      separate buckets), never by the account it resolves to, so a 429 can't confirm
+      which email belongs to a player. A token is taken before hashing (concurrent
+      guesses can't slip through) and refunded on success (only failures count).
+      Trade-off: 10 wrong passwords lock that login string for ~30 s per further
+      attempt, so a stranger can keep a player's name locked out (their email still
+      works); per-IP limits bound how cheaply. Revisit with CAPTCHA or per-device
+      trust if it is abused.
+- [x] Registration doesn't reveal registered emails: the same 202 response, the
+      address owner gets an "already registered" email, and the requested name is
+      reserved for 48 h (as long as an unverified account holds its name) so a
+      follow-up sign-up can't probe it either. Reset requests are processed in the
+      background so response time doesn't reveal registered emails.
+- [x] Password reset (`/api/password-reset/{request,confirm}`, 1 h single-use
+      link): always 202; on success sets the password, verifies the email, ends all
+      sessions and closes the live socket. Never-verified accounts older than 48 h
+      with no matches give up their name/email to a new sign-up, so an email can't
+      be squatted.
 - [ ] If `finish_match` fails 5 times (~15 s) the result is lost and the match is
       later marked abandoned; consider a pending-results table + reconciler.
 - [ ] Single-instance only: startup marks every `in_progress` match abandoned.
@@ -178,8 +199,9 @@ privacy notice (draft in the app) and the competition terms (not yet written).
       **Needs legal review**, together with competition terms (not yet written).
 - [x] `GET /api/matches`, `GET /api/matches/{id}/hands` (own seat's view only;
       404 for other players' matches), `POST /api/resend-verification`.
-- [x] Serves the built client (`STATIC_DIR`, SPA fallback) with CSP, no-referrer,
-      nosniff and frame-deny headers.
+- [x] Serves the built client (`STATIC_DIR`, SPA fallback) with CSP (WebSocket
+      origin from `PUBLIC_URL`), no-referrer, nosniff and frame-deny headers;
+      hashed `/assets` cached immutably, missing assets 404.
 
 ### 3. Web client
 - [x] Svelte 5 + Vite + TypeScript SPA (`web/`), ~29 kB gzipped JS. Pages: landing
@@ -188,8 +210,14 @@ privacy notice (draft in the app) and the competition terms (not yet written).
 - [x] Table: four-colour deck, bets and pot, dealer button, decision clock, hand
       log, bet sizing (min / ½ pot / pot / all-in, slider, keyboard F/C/R),
       auto-muck toggle, result overlay with rating change. Usable at phone width.
-- [x] Reconnects automatically (snapshot rebuilds the table); "opened in another
-      tab" handling; table state is a pure reducer with unit tests (vitest).
+- [x] Reconnects automatically (snapshot rebuilds the table, including auto-muck);
+      "opened in another tab" handling; a match that ended while offline is cleared
+      with a pointer to History. One action in flight at a time (no double-acting
+      from double clicks or held keys).
+- [x] Table state is a pure reducer, unit-tested and checked step by step against
+      seeded matches played by the real engine (`engine-fixture.json`, generated by
+      `crates/server/tests/client_fixture.rs`), including chip conservation.
+- [x] Forgot / reset password pages.
 - [x] Browser tests (Playwright): two players sign up, queue, play a whole match
       through the UI, see the result and their own-seat hand history; phone layout.
 - [x] `README.md` rewritten for the new project; `.env.example`.

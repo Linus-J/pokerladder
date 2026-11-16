@@ -44,6 +44,8 @@ web/            Svelte 5 + Vite + TypeScript SPA (Phase 3)
   `CHROMIUM=/usr/bin/chromium npm run e2e` (needs `npm run build` and
   `cargo build -p pokerladder-server` first). After changing the protocol, run
   `cargo test -p pokerladder-server export_bindings` to regenerate `protocol.ts`.
+  After changing engine events or the wire format, regenerate the reducer's engine
+  fixture: `UPDATE_FIXTURE=1 cargo test -p pokerladder-server --test client_fixture`.
 - `cargo test -q -p pokerladder-engine --test evaluator -- --ignored` — exhaustive
   133M-hand table-vs-direct check (~25 s).
 - `cargo bench -p pokerladder-engine` — criterion evaluator benchmarks.

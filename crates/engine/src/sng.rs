@@ -230,6 +230,10 @@ impl Match {
         self.auto_muck[seat.index()] = on;
     }
 
+    pub fn auto_muck(&self, seat: Seat) -> bool {
+        self.auto_muck[seat.index()]
+    }
+
     /// 0-based index into the schedule for the hand about to start (or in progress).
     fn level_index(&self) -> usize {
         let i = (self.hands_played / self.config.hands_per_level) as usize;

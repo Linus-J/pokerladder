@@ -53,6 +53,10 @@ export const api = {
     call<RegisterResponse>('POST', '/api/register', { name, email, password }),
   verifyEmail: (token: string) => call<void>('POST', '/api/verify-email', { token }),
   resendVerification: () => call<void>('POST', '/api/resend-verification', {}),
+  requestPasswordReset: (email: string) =>
+    call<void>('POST', '/api/password-reset/request', { email }),
+  confirmPasswordReset: (token: string, password: string) =>
+    call<void>('POST', '/api/password-reset/confirm', { token, password }),
   leaderboard: () => call<LeaderboardRow[]>('GET', '/api/leaderboard'),
   matches: () => call<MatchSummary[]>('GET', '/api/matches'),
   hands: (matchId: number) => call<HandHistory[]>('GET', `/api/matches/${matchId}/hands`),

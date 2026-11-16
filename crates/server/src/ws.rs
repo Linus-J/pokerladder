@@ -106,12 +106,15 @@ async fn run(state: AppState, user: User, socket: WebSocket) {
         let _ = tokio::time::timeout(SEND_TIMEOUT, sink.close()).await;
     });
 
+    let (old, seat) = state.hub.connect(user.id, conn.clone());
+    // Queued before the actor's MatchState (which only follows the Connect below).
     conn.send(ServerMsg::Hello {
         user_id: user.id,
         name: user.name.clone(),
         rating: user.rating,
+        email_verified: user.email_verified,
+        in_match: seat.is_some(),
     });
-    let (old, seat) = state.hub.connect(user.id, conn.clone());
     if let Some(old) = old {
         old.send(ServerMsg::Replaced);
         old.kill.cancel();
@@ -134,6 +137,7 @@ async fn run(state: AppState, user: User, socket: WebSocket) {
                 refilled = now;
                 if tokens >= 1.0 {
                     tokens -= 1.0;
+                    refused = 0;
                     on_message(&state, &user, &conn, &text).await;
                 } else {
                     refused += 1;

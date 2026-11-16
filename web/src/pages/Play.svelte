@@ -16,7 +16,6 @@
     return () => clearInterval(id)
   })
 
-  let autoMuck = $state(true)
   let logEl: HTMLElement | undefined = $state()
   $effect(() => {
     void t?.log.length
@@ -78,8 +77,11 @@
         <label class="muck">
           <input
             type="checkbox"
-            bind:checked={autoMuck}
-            onchange={() => game.setAutoMuck(autoMuck)}
+            checked={t.autoMuck}
+            onchange={(e) => {
+              const box = e.currentTarget
+              if (!game.setAutoMuck(box.checked)) box.checked = !box.checked
+            }}
           />
           Muck losing hands
         </label>

@@ -44,14 +44,12 @@ async fn main() -> anyhow::Result<()> {
     let mailer: Arc<dyn Mailer> = match &config.smtp_url {
         Some(url) => {
             let smtp = SmtpMailer::new(url, &config.mail_from).context("SMTP_URL / MAIL_FROM")?;
-            if !smtp
-                .test_connection()
-                .await
-                .context("connecting to the SMTP server")?
-            {
-                anyhow::bail!("the SMTP server refused the connection");
+            // A mail outage shouldn't stop the game: start anyway, loudly.
+            match smtp.test_connection().await {
+                Ok(true) => tracing::info!("email via SMTP"),
+                Ok(false) => tracing::error!("the SMTP server refused the connection"),
+                Err(e) => tracing::error!("connecting to the SMTP server failed: {e:#}"),
             }
-            tracing::info!("email via SMTP");
             Arc::new(smtp)
         }
         None => {

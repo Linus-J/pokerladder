@@ -52,8 +52,12 @@ class Game {
   /** The current (or just-finished) match. */
   table = $state.raw<TableState | null>(null)
   notice = $state<string | null>(null)
+  /** An action was sent and the server hasn't answered yet: don't send another. */
+  pending = $state(false)
 
   private ws: WebSocket | null = null
+  /** A match snapshot arrived on the current socket (so its `hello` is stale news). */
+  private snapshotSeen = false
   private wanted = false
   private failures = 0
   private retryTimer: ReturnType<typeof setTimeout> | undefined
@@ -77,6 +81,10 @@ class Game {
 
   /** After another tab took over: take the connection back. */
   reclaim() {
+    // The replaced socket may not have closed yet; forget it so a new one opens.
+    const old = this.ws
+    this.ws = null
+    old?.close()
     this.start()
   }
 
@@ -86,15 +94,20 @@ class Game {
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
     const ws = new WebSocket(`${scheme}://${location.host}/ws`)
     this.ws = ws
+    this.snapshotSeen = false
     ws.onopen = () => {
       this.failures = 0
       this.status = 'online'
     }
-    ws.onmessage = (ev) => this.receive(JSON.parse(ev.data) as ServerMsg)
+    ws.onmessage = (ev) => {
+      // A superseded socket can still deliver (e.g. its own "replaced"): ignore it.
+      if (this.ws === ws) this.receive(JSON.parse(ev.data) as ServerMsg)
+    }
     ws.onclose = () => {
       if (this.ws !== ws) return
       this.ws = null
       this.queued = false
+      this.pending = false
       if (this.status === 'replaced' || !this.wanted) return
       this.status = 'connecting'
       this.failures += 1
@@ -116,7 +129,9 @@ class Game {
       }
     }
     const delay = Math.min(5000, 250 * 2 ** Math.min(this.failures, 5))
-    this.retryTimer = setTimeout(() => this.wanted && this.open(), delay)
+    this.retryTimer = setTimeout(() => {
+      if (this.wanted && !this.ws) this.open()
+    }, delay)
   }
 
   send(msg: ClientMsg) {
@@ -137,11 +152,15 @@ class Game {
   }
 
   act(action: WireAction) {
-    this.send({ type: 'act', action })
+    if (this.pending) return
+    if (this.send({ type: 'act', action })) this.pending = true
   }
 
+  /** Returns whether the setting was sent (and so applied locally). */
   setAutoMuck(on: boolean) {
-    this.send({ type: 'set_auto_muck', on })
+    if (!this.send({ type: 'set_auto_muck', on })) return false
+    if (this.table) this.table = { ...this.table, autoMuck: on }
+    return true
   }
 
   /** Leaves the result screen. */
@@ -157,9 +176,19 @@ class Game {
 
   private receive(msg: ServerMsg) {
     const now = performance.now()
+    // Any news about the match answers (or overtakes) an action in flight.
+    if (msg.type !== 'queued' && msg.type !== 'queue_left') this.pending = false
     switch (msg.type) {
       case 'hello':
-        if (session.me) session.me = { ...session.me, rating: msg.rating }
+        if (session.me) {
+          session.me = { ...session.me, rating: msg.rating, email_verified: msg.email_verified }
+        }
+        // The match ended while we were disconnected: its result will be in History.
+        // (In a rare race a new match's snapshot can overtake the hello; keep it.)
+        if (!msg.in_match && !this.snapshotSeen && this.table && this.table.winner === null) {
+          this.table = null
+          this.flash('Your match finished while you were away; see History for the result.')
+        }
         break
       case 'queued':
         this.queued = true
@@ -169,6 +198,7 @@ class Game {
         this.queued = false
         break
       case 'match_state':
+        this.snapshotSeen = true
         this.queued = false
         this.table = fromSnapshot(msg, now)
         if (router.path !== '/play') router.go('/play')

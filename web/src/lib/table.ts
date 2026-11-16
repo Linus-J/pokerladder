@@ -47,12 +47,16 @@ export interface TableState {
   log: string[]
   winner: number | null
   result: Pair<RatingChange> | null
+  /** This player's auto-muck setting (takes effect from the next hand). */
+  autoMuck: boolean
 }
 
 const LOG_LIMIT = 200
 
+/** Chips in the middle: everything committed, less what has been paid out so far. */
 export function pot(h: HandView): number {
-  return h.complete ? 0 : h.committed[0] + h.committed[1]
+  if (h.complete) return 0
+  return Math.max(0, h.committed[0] + h.committed[1] - h.winnings[0] - h.winnings[1])
 }
 
 function set<T>(p: Pair<T>, seat: number, v: T): Pair<T> {
@@ -77,6 +81,7 @@ export function fromSnapshot(s: MatchSnapshot, now: number): TableState {
     log: [],
     winner: s.winner,
     result: null,
+    autoMuck: s.auto_muck,
   }
   if (s.hand) {
     for (const e of s.hand.events) t = applyEvent(t, e)
@@ -186,6 +191,10 @@ export function applyEvent(t: TableState, e: WireEvent): TableState {
                 ? `bets ${e.street_total}`
                 : `raises to ${e.street_total}`
       text = `${name(e.seat)} ${verb}${e.all_in ? ' (all-in)' : ''}`
+      // That decision is made; the next one (if any) arrives as a new turn.
+      if (t.turn?.seat === e.seat) {
+        return { ...t, hand, turn: null, log: line(t, text) }
+      }
       break
     }
     case 'hands_tabled':

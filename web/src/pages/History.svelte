@@ -21,6 +21,7 @@
 
   $effect(() => {
     hands = null
+    error = null
     if (selected === null) return
     const id = selected
     api.hands(id).then(

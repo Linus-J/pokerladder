@@ -14,6 +14,7 @@ const snapshot: MatchSnapshot = {
   hand: null,
   turn: null,
   winner: null,
+  auto_muck: false,
 }
 
 // Hand 1: alice (seat 0) has the button and posts the small blind.
@@ -98,6 +99,26 @@ describe('table reducer', () => {
     const t2 = play([{ type: 'showdown', seat: 0, cards: ['Qs', 'Qh'], rank: 3000, description: 'a pair of Queens' }, { type: 'mucked', seat: 1 }], t)
     expect(t2.hand!.shown).toEqual(['a pair of Queens', null])
     expect(t2.hand!.mucked).toEqual([false, true])
+  })
+
+  it('clears the turn once that seat acts, and keeps the auto-muck setting', () => {
+    let t = applyTurn(play(start), { seat: 0, remaining_ms: 15000, legal: { seat: 0, can_fold: true, can_check: false, call: 10, raise_min_to: 40, raise_max_to: 1500 } }, 0)
+    expect(t.autoMuck).toBe(false)
+    // An event from the other seat (e.g. a late echo) leaves the decision alone.
+    t = applyEvent(t, { type: 'timed_out', seat: 1 })
+    expect(t.turn).not.toBeNull()
+    t = applyEvent(t, { type: 'acted', seat: 0, action: { kind: 'call' }, facing: 20, added: 10, street_total: 20, all_in: false })
+    expect(t.turn).toBeNull()
+  })
+
+  it('takes winnings out of the pot as they are paid', () => {
+    const t = play([
+      ...start,
+      { type: 'acted', seat: 0, action: { kind: 'call' }, facing: 20, added: 10, street_total: 20, all_in: false },
+      { type: 'won', seat: 0, amount: 20 },
+    ])
+    expect(pot(t.hand!)).toBe(20)
+    expect(pot(play([{ type: 'won', seat: 1, amount: 20 }], t).hand!)).toBe(0)
   })
 
   it('ends the match and ignores hand events with no hand', () => {

@@ -16,7 +16,7 @@ export default defineConfig({
       '/ws': { target: backend, ws: true },
     },
   },
-  build: { sourcemap: true },
+  build: { sourcemap: false },
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',

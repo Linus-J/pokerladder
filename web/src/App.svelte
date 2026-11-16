@@ -2,7 +2,9 @@
   import { onMount } from 'svelte'
   import { game, session } from './lib/game.svelte'
   import { link, router } from './lib/router.svelte'
+  import ForgotPassword from './pages/ForgotPassword.svelte'
   import History from './pages/History.svelte'
+  import ResetPassword from './pages/ResetPassword.svelte'
   import Lobby from './pages/Lobby.svelte'
   import Login from './pages/Login.svelte'
   import Play from './pages/Play.svelte'
@@ -74,6 +76,10 @@
     <Register />
   {:else if path === '/verify-email'}
     <VerifyEmail />
+  {:else if path === '/forgot-password'}
+    <ForgotPassword />
+  {:else if path === '/reset-password'}
+    <ResetPassword />
   {:else if path === '/privacy'}
     <Privacy />
   {:else if path === '/play' && session.me}

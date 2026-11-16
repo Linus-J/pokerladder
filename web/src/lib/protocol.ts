@@ -3,7 +3,12 @@
 
 export type ClientMsg = { "type": "queue_join" } | { "type": "queue_leave" } | { "type": "act", action: WireAction, } | { "type": "set_auto_muck", on: boolean, };
 
-export type ServerMsg = { "type": "hello", user_id: number, name: string, rating: number, } | { "type": "queued" } | { "type": "queue_left" } | { "type": "match_state" } & MatchSnapshot | { "type": "event", match_id: number, event: WireEvent, } | { "type": "turn", match_id: number, turn: TurnInfo, } | { "type": "match_ended", match_id: number, winner: number, 
+export type ServerMsg = { "type": "hello", user_id: number, name: string, rating: number, email_verified: boolean, 
+/**
+ * Whether the user is seated in a live match (a `MatchState` follows if so).
+ * A client still showing a table when this is false missed the match's end.
+ */
+in_match: boolean, } | { "type": "queued" } | { "type": "queue_left" } | { "type": "match_state" } & MatchSnapshot | { "type": "event", match_id: number, event: WireEvent, } | { "type": "turn", match_id: number, turn: TurnInfo, } | { "type": "match_ended", match_id: number, winner: number, 
 /**
  * Indexed by seat; `None` if the result could not be recorded.
  */
@@ -23,7 +28,11 @@ names: [string, string], ratings: [number, number], hands_played: number, stacks
 /**
  * The hand in progress, if any.
  */
-hand: HandSnapshot | null, turn: TurnInfo | null, winner: number | null, };
+hand: HandSnapshot | null, turn: TurnInfo | null, winner: number | null, 
+/**
+ * The receiving player's auto-muck setting (takes effect from the next hand).
+ */
+auto_muck: boolean, };
 
 export type HandSnapshot = { state: WirePublicState, 
 /**

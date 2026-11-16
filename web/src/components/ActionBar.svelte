@@ -13,10 +13,14 @@
   const canRaise = $derived(legal?.raise_min_to != null)
 
   let amount = $state(0)
-  // Reset the slider to the minimum whenever a new decision arrives.
+  // Reset the slider to the minimum when a different decision arrives (by value: a
+  // repeated turn message mustn't wipe what the player has dialled in). Within one
+  // street a player only decides again after a raise, which changes `legal`.
+  const decision = $derived(legal ? `${hand?.number}|${hand?.street}|${JSON.stringify(legal)}` : null)
   $effect(() => {
-    if (legal) amount = lo
+    if (decision !== null) amount = lo
   })
+  const busy = $derived(game.pending)
 
   const target = $derived(Math.min(hi, Math.max(lo, Math.round(amount || 0))))
   const raiseLabel = $derived(
@@ -36,7 +40,9 @@
   }
 
   function onkey(e: KeyboardEvent) {
-    if (!legal || e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey || e.altKey) return
+    // A held key repeats: only the first press counts.
+    if (!legal || busy || e.repeat) return
+    if (e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey || e.altKey) return
     const k = e.key.toLowerCase()
     if (k === 'f' && legal.can_fold) fold()
     else if (k === 'c' && (legal.can_check || legal.call !== null)) passive()
@@ -70,13 +76,13 @@
     {/if}
     <div class="buttons">
       {#if legal.can_fold}
-        <button type="button" class="fold" onclick={fold}>Fold <kbd>F</kbd></button>
+        <button type="button" class="fold" disabled={busy} onclick={fold}>Fold <kbd>F</kbd></button>
       {/if}
-      <button type="button" class="call" onclick={passive}>
+      <button type="button" class="call" disabled={busy} onclick={passive}>
         {legal.can_check ? 'Check' : `Call ${(legal.call ?? 0).toLocaleString()}`} <kbd>C</kbd>
       </button>
       {#if canRaise}
-        <button type="button" class="primary raise" onclick={raise}>{raiseLabel} <kbd>R</kbd></button>
+        <button type="button" class="primary raise" disabled={busy} onclick={raise}>{raiseLabel} <kbd>R</kbd></button>
       {/if}
     </div>
   {:else if table.winner === null}

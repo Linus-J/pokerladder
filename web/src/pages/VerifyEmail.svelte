@@ -10,7 +10,7 @@
   onMount(async () => {
     const token = router.query.get('token') ?? ''
     // Drop the token from the address bar and history.
-    history.replaceState(null, '', '/verify-email')
+    router.go('/verify-email', true)
     try {
       await api.verifyEmail(token)
       status = 'ok'

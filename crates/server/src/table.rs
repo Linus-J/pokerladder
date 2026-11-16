@@ -388,6 +388,7 @@ impl<S: MatchStore> Table<S> {
             hand,
             turn: self.turn_info(),
             winner: self.m.winner().map(seat_u8),
+            auto_muck: self.m.auto_muck(seat),
         }
     }
 

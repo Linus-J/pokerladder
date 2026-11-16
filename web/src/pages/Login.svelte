@@ -35,7 +35,10 @@
   </label>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <button type="submit" class="primary wide" disabled={busy}>{busy ? 'Logging in…' : 'Log in'}</button>
-  <p class="muted alt">New here? <a href="/register" onclick={link}>Create an account</a></p>
+  <p class="muted alt">
+    <a href="/forgot-password" onclick={link}>Forgot your password?</a><br />
+    New here? <a href="/register" onclick={link}>Create an account</a>
+  </p>
 </form>
 
 <style>

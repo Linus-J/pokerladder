@@ -1,6 +1,6 @@
 //! Outgoing email: SMTP in production (`SMTP_URL`), the log in development.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use lettre::message::Mailbox;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -46,6 +46,21 @@ pub fn already_registered(to: &str, login_url: &str) -> Email {
     }
 }
 
+pub fn password_reset(to: &str, name: &str, link: &str) -> Email {
+    Email {
+        to: to.to_owned(),
+        subject: "Reset your Pokerladder password".into(),
+        body: format!(
+            "Hi {name},\n\n\
+             Someone (hopefully you) asked to reset the password for your Pokerladder \
+             account. Choose a new one here:\n\n\
+             {link}\n\n\
+             The link works once and expires in one hour. If you didn't ask for this, \
+             ignore this email; your password hasn't changed.\n"
+        ),
+    }
+}
+
 /// Development mailer: writes the email to the log.
 pub struct LogMailer;
 
@@ -61,9 +76,13 @@ impl Mailer for LogMailer {
 }
 
 /// Sends through an SMTP relay, e.g. `smtps://user:pass@smtp.example.com:465`.
+/// SMTP connections open at once; further emails wait their turn.
+const MAX_CONCURRENT_SENDS: usize = 8;
+
 pub struct SmtpMailer {
     transport: AsyncSmtpTransport<Tokio1Executor>,
     from: Mailbox,
+    sending: Arc<tokio::sync::Semaphore>,
 }
 
 impl SmtpMailer {
@@ -71,6 +90,7 @@ impl SmtpMailer {
         Ok(SmtpMailer {
             transport: AsyncSmtpTransport::<Tokio1Executor>::from_url(smtp_url)?.build(),
             from: from.parse()?,
+            sending: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SENDS)),
         })
     }
 
@@ -101,7 +121,11 @@ impl Mailer for SmtpMailer {
             }
         };
         let transport = self.transport.clone();
+        let sending = self.sending.clone();
         tokio::spawn(async move {
+            let Ok(_permit) = sending.acquire_owned().await else {
+                return;
+            };
             if let Err(e) = transport.send(message).await {
                 tracing::error!("sending email failed: {e}");
             }

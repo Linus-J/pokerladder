@@ -24,6 +24,7 @@ use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::routing::{any, get, post};
 use pokerladder_engine::MatchConfig;
 use sqlx::PgPool;
+use tower::ServiceBuilder;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -84,17 +85,37 @@ impl AppState {
     }
 }
 
-/// Content Security Policy for the web client: everything from our own origin
-/// (including the WebSocket), inline styles for Svelte transitions, no framing.
-const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-                   img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; \
-                   base-uri 'none'; form-action 'self'";
+/// Content Security Policy for the web client: everything from our own origin, plus
+/// our WebSocket origin spelled out (older browsers don't count `ws(s):` as `'self'`),
+/// inline styles for Svelte transitions, no framing.
+fn csp(public_url: &str) -> HeaderValue {
+    let ws = public_url
+        .replacen("https://", "wss://", 1)
+        .replacen("http://", "ws://", 1);
+    let csp = format!(
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data:; connect-src 'self' {ws}; frame-ancestors 'none'; \
+         base-uri 'none'; form-action 'self'"
+    );
+    HeaderValue::from_str(&csp).expect("PUBLIC_URL was validated as an origin")
+}
+
+/// Vite's build puts content-hashed files under `assets/`: cache them for good.
+const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/api/register", post(auth::register))
         .route("/api/verify-email", post(auth::verify_email))
         .route("/api/resend-verification", post(auth::resend_verification))
+        .route(
+            "/api/password-reset/request",
+            post(auth::request_password_reset),
+        )
+        .route(
+            "/api/password-reset/confirm",
+            post(auth::confirm_password_reset),
+        )
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/me", get(auth::me))
@@ -106,25 +127,42 @@ pub fn router(state: AppState) -> Router {
     let app = match &state.config.static_dir {
         // The client routes in the browser: unknown paths get index.html.
         Some(dir) => {
+            // A missing asset is a 404, not index.html (which would be cached forever).
+            let assets = ServiceBuilder::new()
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::CACHE_CONTROL,
+                    |r: &axum::response::Response<_>| {
+                        r.status()
+                            .is_success()
+                            .then(|| HeaderValue::from_static(IMMUTABLE))
+                    },
+                ))
+                .service(ServeDir::new(dir.join("assets")));
             let spa = ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")));
-            api.fallback_service(spa)
+            api.nest_service("/assets", assets).fallback_service(spa)
         }
         None => api,
     };
-    let headers: [(HeaderName, &'static str); 5] = [
-        (header::CONTENT_SECURITY_POLICY, CSP),
-        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+    let headers: [(HeaderName, HeaderValue); 5] = [
+        (
+            header::CONTENT_SECURITY_POLICY,
+            csp(&state.config.public_url),
+        ),
+        (
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ),
         // Verification links carry a token in the URL: never leak it as a referrer.
-        (header::REFERRER_POLICY, "no-referrer"),
-        (header::X_FRAME_OPTIONS, "DENY"),
-        (header::CACHE_CONTROL, "no-cache"),
+        (
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        ),
+        (header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY")),
+        (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
     ];
     let mut app = app.with_state(state);
     for (name, value) in headers {
-        app = app.layer(SetResponseHeaderLayer::if_not_present(
-            name,
-            HeaderValue::from_static(value),
-        ));
+        app = app.layer(SetResponseHeaderLayer::if_not_present(name, value));
     }
     app
 }

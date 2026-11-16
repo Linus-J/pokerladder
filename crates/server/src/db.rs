@@ -77,6 +77,136 @@ pub async fn login_lookup(db: &PgPool, login: &str) -> anyhow::Result<Option<(Us
     .await?)
 }
 
+/// Whether a name belongs to an account or is reserved (see [`reserve_name`]).
+pub async fn name_taken(db: &PgPool, name: &str) -> anyhow::Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE lower(name) = lower($1))
+             OR EXISTS (SELECT 1 FROM name_reservations
+                        WHERE name_lower = lower($1) AND expires_at > now())",
+    )
+    .bind(name)
+    .fetch_one(db)
+    .await?)
+}
+
+/// Holds `name` until `until` (or later, if it is already held longer).
+pub async fn reserve_name(db: &PgPool, name: &str, until: OffsetDateTime) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM name_reservations WHERE expires_at <= now()")
+        .execute(db)
+        .await?;
+    sqlx::query(
+        "INSERT INTO name_reservations (name_lower, expires_at) VALUES (lower($1), $2)
+         ON CONFLICT (name_lower) DO UPDATE
+         SET expires_at = greatest(name_reservations.expires_at, EXCLUDED.expires_at)",
+    )
+    .bind(name)
+    .bind(until)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Deletes never-verified accounts older than `age` that have played no matches and
+/// hold `name` or `email`, so an abandoned (or squatted) sign-up doesn't block them
+/// forever. Returns how many were deleted.
+pub async fn purge_stale_unverified(
+    db: &PgPool,
+    name: &str,
+    email: &str,
+    age: std::time::Duration,
+) -> anyhow::Result<u64> {
+    let cutoff = OffsetDateTime::now_utc() - age;
+    let r = sqlx::query(
+        "DELETE FROM users u
+         WHERE u.email_verified_at IS NULL AND u.created_at < $3
+           AND (lower(u.name) = lower($1) OR lower(u.email) = lower($2))
+           AND NOT EXISTS (SELECT 1 FROM matches m WHERE m.player0 = u.id OR m.player1 = u.id)",
+    )
+    .bind(name)
+    .bind(email)
+    .bind(cutoff)
+    .execute(db)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// `(id, name, email as stored)` of the account with this email (case-insensitive).
+pub async fn user_by_email(
+    db: &PgPool,
+    email: &str,
+) -> anyhow::Result<Option<(UserId, String, String)>> {
+    Ok(
+        sqlx::query_as("SELECT id, name, email FROM users WHERE lower(email) = lower($1)")
+            .bind(email)
+            .fetch_optional(db)
+            .await?,
+    )
+}
+
+pub async fn create_password_reset(
+    db: &PgPool,
+    user: UserId,
+    token_hash: &[u8],
+    expires_at: OffsetDateTime,
+) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM password_resets WHERE expires_at <= now()")
+        .execute(db)
+        .await?;
+    sqlx::query(
+        "INSERT INTO password_resets (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
+    )
+    .bind(token_hash)
+    .bind(user)
+    .bind(expires_at)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Consumes a reset token: sets the password, marks the email verified (the link
+/// proved ownership), and ends every session and outstanding reset. Returns the user,
+/// or `None` if the token is invalid or expired.
+pub async fn reset_password(
+    db: &PgPool,
+    token_hash: &[u8],
+    password_hash: &str,
+) -> anyhow::Result<Option<UserId>> {
+    let mut tx = db.begin().await?;
+    let user: Option<UserId> = sqlx::query_scalar(
+        "DELETE FROM password_resets WHERE token_hash = $1 AND expires_at > now()
+         RETURNING user_id",
+    )
+    .bind(token_hash)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(user) = user else { return Ok(None) };
+    sqlx::query(
+        "UPDATE users SET password_hash = $2,
+                          email_verified_at = coalesce(email_verified_at, now())
+         WHERE id = $1",
+    )
+    .bind(user)
+    .bind(password_hash)
+    .execute(&mut *tx)
+    .await?;
+    for q in [
+        "DELETE FROM password_resets WHERE user_id = $1",
+        "DELETE FROM sessions WHERE user_id = $1",
+        "DELETE FROM email_verifications WHERE user_id = $1",
+    ] {
+        sqlx::query(q).bind(user).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(Some(user))
+}
+
+pub async fn user_email(db: &PgPool, id: UserId) -> anyhow::Result<String> {
+    Ok(sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_one(db)
+        .await?)
+}
+
 pub async fn user_by_id(db: &PgPool, id: UserId) -> anyhow::Result<Option<User>> {
     let row: Option<UserRow> = sqlx::query_as(
         "SELECT id, name, rating, email_verified_at IS NOT NULL FROM users WHERE id = $1",
@@ -164,7 +294,7 @@ pub async fn verify_email(db: &PgPool, token_hash: &[u8]) -> anyhow::Result<bool
     Ok(true)
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 pub struct LeaderboardRow {
     pub name: String,
     pub rating: f64,

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use pokerladder_engine::MatchConfig;
 use pokerladder_server::config::Config;
-use pokerladder_server::mail::LogMailer;
+use pokerladder_server::mail::{LogMailer, Mailer, SmtpMailer};
 use pokerladder_server::table::Timing;
 use pokerladder_server::{AppState, db, router};
 use tracing_subscriber::EnvFilter;
@@ -41,17 +41,33 @@ async fn main() -> anyhow::Result<()> {
     pokerladder_engine::Match::new(match_config.clone(), pokerladder_engine::holdem::Seat::Zero)
         .map_err(|e| anyhow::anyhow!("invalid match config: {e:?}"))?;
 
+    let mailer: Arc<dyn Mailer> = match &config.smtp_url {
+        Some(url) => {
+            let smtp = SmtpMailer::new(url, &config.mail_from).context("SMTP_URL / MAIL_FROM")?;
+            // A mail outage shouldn't stop the game: start anyway, loudly.
+            match smtp.test_connection().await {
+                Ok(true) => tracing::info!("email via SMTP"),
+                Ok(false) => tracing::error!("the SMTP server refused the connection"),
+                Err(e) => tracing::error!("connecting to the SMTP server failed: {e:#}"),
+            }
+            Arc::new(smtp)
+        }
+        None => {
+            tracing::warn!("SMTP_URL not set: emails are only logged (development)");
+            Arc::new(LogMailer)
+        }
+    };
+    match &config.static_dir {
+        Some(dir) => tracing::info!(dir = %dir.display(), "serving the web client"),
+        None => tracing::warn!("no web client build found (run `npm run build` in web/)"),
+    }
+
     let bind = config.bind;
-    let state = AppState::new(
-        config,
-        db,
-        Arc::new(LogMailer),
-        match_config,
-        Timing::STANDARD,
-    );
+    let state = AppState::new(config, db, mailer, match_config, Timing::STANDARD);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "listening");
-    axum::serve(listener, router(state))
+    let app = router(state).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })

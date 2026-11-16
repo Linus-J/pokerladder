@@ -3,13 +3,18 @@
 
 export type ClientMsg = { "type": "queue_join" } | { "type": "queue_leave" } | { "type": "act", action: WireAction, } | { "type": "set_auto_muck", on: boolean, };
 
-export type ServerMsg = { "type": "hello", user_id: number, name: string, rating: number, } | { "type": "queued" } | { "type": "queue_left" } | { "type": "match_state" } & MatchSnapshot | { "type": "event", match_id: number, event: WireEvent, } | { "type": "turn", match_id: number, turn: TurnInfo, } | { "type": "match_ended", match_id: number, winner: number, 
+export type ServerMsg = { "type": "hello", user_id: number, name: string, rating: number, email_verified: boolean, 
+/**
+ * Whether the user is seated in a live match (a `MatchState` follows if so).
+ * A client still showing a table when this is false missed the match's end.
+ */
+in_match: boolean, } | { "type": "queued" } | { "type": "queue_left" } | { "type": "match_state" } & MatchSnapshot | { "type": "event", match_id: number, event: WireEvent, } | { "type": "turn", match_id: number, turn: TurnInfo, } | { "type": "match_ended", match_id: number, winner: number, 
 /**
  * Indexed by seat; `None` if the result could not be recorded.
  */
 ratings: [RatingChange, RatingChange] | null, } | { "type": "error", code: ErrorCode, message: string, } | { "type": "replaced" };
 
-export type ErrorCode = "bad_message" | "email_not_verified" | "already_in_match" | "not_in_match" | "illegal_action" | "unavailable";
+export type ErrorCode = "bad_message" | "email_not_verified" | "already_in_match" | "not_in_match" | "illegal_action" | "unavailable" | "rate_limited";
 
 export type MatchSnapshot = { match_id: number, 
 /**
@@ -23,7 +28,11 @@ names: [string, string], ratings: [number, number], hands_played: number, stacks
 /**
  * The hand in progress, if any.
  */
-hand: HandSnapshot | null, turn: TurnInfo | null, winner: number | null, };
+hand: HandSnapshot | null, turn: TurnInfo | null, winner: number | null, 
+/**
+ * The receiving player's auto-muck setting (takes effect from the next hand).
+ */
+auto_muck: boolean, };
 
 export type HandSnapshot = { state: WirePublicState, 
 /**
@@ -53,3 +62,29 @@ export type WireEvent = { "type": "hand_started", number: number, level: number,
  * 1..=7462, higher wins.
  */
 rank: number, description: string, } | { "type": "mucked", seat: number, } | { "type": "won", seat: number, amount: number, } | { "type": "ended", stacks: [number, number], } | { "type": "timed_out", seat: number, } | { "type": "match_over", winner: number, };
+
+export type MeResponse = { id: number, name: string, rating: number, email_verified: boolean, 
+/**
+ * Whether this server only lets verified accounts queue.
+ */
+verification_required: boolean, };
+
+export type RegisterResponse = { message: string, };
+
+export type LeaderboardRow = { name: string, rating: number, rated_matches: number, };
+
+export type MatchSummary = { id: number, opponent: string, 
+/**
+ * `in_progress`, `finished` or `abandoned`.
+ */
+status: string, 
+/**
+ * `None` unless finished.
+ */
+won: boolean | null, rating_before: number | null, rating_after: number | null, hands_played: number | null, started_at: string, };
+
+export type HandHistory = { number: number, started_at: string, 
+/**
+ * PokerStars-style text from this player's seat.
+ */
+text: string, };

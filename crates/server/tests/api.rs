@@ -15,6 +15,7 @@ use pokerladder_server::config::Config;
 use pokerladder_server::db::{self, PgStore};
 use pokerladder_server::mail::CaptureMailer;
 use pokerladder_server::protocol::{ClientMsg, ErrorCode, ServerMsg, WireAction, WireEvent};
+use pokerladder_server::ratelimit::RateLimits;
 use pokerladder_server::table::{MatchFinish, MatchStore, Timing};
 use pokerladder_server::{AppState, router};
 use rand::RngExt;
@@ -32,6 +33,10 @@ struct App {
 }
 
 fn app(db: PgPool, require_verification: bool) -> App {
+    app_with(db, require_verification, RateLimits::STANDARD)
+}
+
+fn app_with(db: PgPool, require_verification: bool, rate_limits: RateLimits) -> App {
     pokerladder_engine::eval::init();
     let mail = Arc::new(CaptureMailer::default());
     let config = Config {
@@ -40,6 +45,11 @@ fn app(db: PgPool, require_verification: bool) -> App {
         public_url: ORIGIN.into(),
         secure_cookies: false,
         require_email_verification: require_verification,
+        smtp_url: None,
+        mail_from: "test <t@localhost>".into(),
+        static_dir: None,
+        trusted_proxy_header: None,
+        rate_limits,
     };
     let timing = Timing {
         between_hands: Duration::from_millis(5),
@@ -103,9 +113,8 @@ async fn signup(app: &App, name: &str) -> String {
         None,
     )
     .await;
-    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
-    let link = app.mail.link_for(&email).unwrap();
-    let token = link.split("token=").nth(1).unwrap();
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let token = app.mail.token_for(&email).unwrap();
     let r = call(
         app,
         "POST",
@@ -143,9 +152,14 @@ async fn account_lifecycle(db: PgPool) {
         None,
     )
     .await;
-    assert_eq!(r.status, StatusCode::CREATED);
-    assert_eq!(r.body["email_verified"], false);
-    assert_eq!(r.body["rating"], 1500.0);
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let accepted = r.body.clone();
+    assert!(
+        accepted["message"]
+            .as_str()
+            .unwrap()
+            .contains("Check your email")
+    );
 
     // Names and emails are unique ignoring case.
     let r = call(
@@ -160,6 +174,8 @@ async fn account_lifecycle(db: PgPool) {
         (r.status, r.body["error"].as_str()),
         (StatusCode::CONFLICT, Some("name_taken"))
     );
+    // A registered email gets exactly the same response as a new one (no account
+    // enumeration); its owner is told by email instead, and no account is created.
     let r = call(
         &app,
         "POST",
@@ -168,10 +184,15 @@ async fn account_lifecycle(db: PgPool) {
         None,
     )
     .await;
-    assert_eq!(
-        (r.status, r.body["error"].as_str()),
-        (StatusCode::CONFLICT, Some("email_taken"))
-    );
+    assert_eq!((r.status, &r.body), (StatusCode::ACCEPTED, &accepted));
+    let notice = app.mail.last_to("A@X.io").unwrap();
+    assert!(notice.body.contains("already has one"), "{}", notice.body);
+    assert!(!notice.body.contains("token="));
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(users, 1);
     // Validation.
     for (body, code) in [
         (reg("bad name", "c@x.io", "longenough"), "bad_name"),
@@ -244,9 +265,13 @@ async fn account_lifecycle(db: PgPool) {
     )
     .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
-    let link = app.mail.link_for("a@x.io").unwrap();
-    assert!(link.starts_with("http://localhost:8080/verify-email?token="));
-    let token = link.split("token=").nth(1).unwrap();
+    let mail = app.mail.last_to("a@x.io").unwrap();
+    assert!(
+        mail.body
+            .contains("http://localhost:8080/verify-email?token=")
+    );
+    let token = app.mail.token_for("a@x.io").unwrap();
+    let token = token.as_str();
     let r = call(
         &app,
         "POST",
@@ -505,7 +530,7 @@ async fn unverified_players_cannot_queue(db: PgPool) {
         None,
     )
     .await;
-    assert_eq!(r.status, StatusCode::CREATED);
+    assert_eq!(r.status, StatusCode::ACCEPTED);
     let cookie = login(&app, "dave", "longenough").await.unwrap();
     let mut ws = ws_connect(addr, Some(&cookie), None).await.unwrap();
     recv(&mut ws).await; // hello
@@ -528,6 +553,7 @@ async fn play(mut ws: Ws) -> (u8, u8, Vec<WireEvent>, ServerMsg) {
     };
     let me = snap.seat;
     let mut events = vec![];
+    let mut last: Option<WireAction> = None;
     loop {
         let msg = recv(&mut ws).await.expect("connection closed mid-match");
         match msg {
@@ -550,9 +576,20 @@ async fn play(mut ws: Ws) -> (u8, u8, Vec<WireEvent>, ServerMsg) {
                     }
                     options[rng.random_range(0..options.len())]
                 };
+                last = Some(action);
                 send(&mut ws, &ClientMsg::Act { action }).await;
             }
             ServerMsg::MatchEnded { winner, .. } => return (me, winner, events, msg),
+            // A bot acts far faster than a person and can hit the message limit:
+            // back off and resend, as a client should.
+            ServerMsg::Error {
+                code: ErrorCode::RateLimited,
+                ..
+            } => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let action = last.expect("rate limited before acting");
+                send(&mut ws, &ClientMsg::Act { action }).await;
+            }
             ServerMsg::Error { message, .. } => panic!("server refused a legal action: {message}"),
             _ => {}
         }
@@ -672,4 +709,537 @@ async fn two_players_queue_play_a_match_and_get_rated(db: PgPool) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("players still seated after the match");
+}
+
+async fn login_status(app: &App, login: &str, password: &str) -> StatusCode {
+    call(
+        app,
+        "POST",
+        "/api/login",
+        json!({"login": login, "password": password}),
+        None,
+    )
+    .await
+    .status
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn failed_logins_are_limited_per_account(db: PgPool) {
+    // A generous per-IP limit, so only the per-account one is in play.
+    let mut limits = RateLimits::STANDARD;
+    limits.login_per_ip.burst = 1000;
+    let app = app_with(db, true, limits);
+    signup(&app, "victim").await;
+    for _ in 0..9 {
+        assert_eq!(
+            login_status(&app, "victim", "guess1234").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    // Successful logins don't use up the allowance.
+    for _ in 0..5 {
+        assert_eq!(
+            login_status(&app, "victim", "hunter2hunter2").await,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        login_status(&app, "victim", "guess1234").await,
+        StatusCode::UNAUTHORIZED
+    );
+    for (login, password) in [("VICTIM ", "guess1234"), ("victim", "hunter2hunter2")] {
+        let r = call(
+            &app,
+            "POST",
+            "/api/login",
+            json!({"login": login, "password": password}),
+            None,
+        )
+        .await;
+        assert_eq!(
+            (r.status, r.body["error"].as_str()),
+            (StatusCode::TOO_MANY_REQUESTS, Some("rate_limited"))
+        );
+    }
+    // Buckets follow what was typed, not the account it resolves to: otherwise, with
+    // "victim" locked, a 429 on a guessed email would confirm it is victim's.
+    for login in ["victim@example.com", "someone@example.com", "nobody"] {
+        assert_eq!(
+            login_status(&app, login, "guess1234").await,
+            StatusCode::UNAUTHORIZED,
+            "{login}"
+        );
+    }
+    assert!(
+        login(&app, "victim@example.com", "hunter2hunter2")
+            .await
+            .is_some()
+    );
+    // Oversized input is refused before it reaches a limiter or argon2.
+    let huge = "x".repeat(10_000);
+    for _ in 0..20 {
+        assert_eq!(
+            login_status(&app, &huge, "guess1234").await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            login_status(&app, "nobody", &huge).await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn auth_endpoints_are_rate_limited(db: PgPool) {
+    // Debug-build argon2 is slow enough for the standard refill to matter.
+    let mut limits = RateLimits::STANDARD;
+    limits.login_per_ip.every = Duration::from_secs(3600);
+    limits.register_per_ip.every = Duration::from_secs(3600);
+    let app = app_with(db, true, limits);
+    // Per IP (all requests here come from the same "unknown" address): 10 at once,
+    // whoever they are for.
+    for i in 0..10 {
+        assert_eq!(
+            login_status(&app, &format!("n{i}"), "guess1234").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        login_status(&app, "other", "guess1234").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    for i in 0..10 {
+        let body = json!({"name": format!("u{i}"), "email": format!("u{i}@x.io"), "password": "longenough"});
+        let r = call(&app, "POST", "/api/register", body, None).await;
+        assert_eq!(r.status, StatusCode::ACCEPTED);
+    }
+    let body = json!({"name": "u10", "email": "u10@x.io", "password": "longenough"});
+    let r = call(&app, "POST", "/api/register", body, None).await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn players_see_only_their_own_histories(db: PgPool) {
+    let app = app(db.clone(), true);
+    let alice = signup(&app, "alice").await;
+    let bob = signup(&app, "bob").await;
+    let eve = signup(&app, "eve").await;
+    // Play a real match between alice (1) and bob (2).
+    let addr = serve(&app).await;
+    let mut sockets = vec![];
+    for cookie in [&alice, &bob] {
+        let mut ws = ws_connect(addr, Some(cookie), Some(ORIGIN)).await.unwrap();
+        recv(&mut ws).await;
+        send(&mut ws, &ClientMsg::QueueJoin).await;
+        sockets.push(ws);
+    }
+    let players: Vec<_> = sockets
+        .into_iter()
+        .map(|ws| tokio::spawn(play(ws)))
+        .collect();
+    for p in players {
+        p.await.unwrap();
+    }
+    let r = call(&app, "GET", "/api/matches", Value::Null, Some(&alice)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let list = r.body.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    let m = &list[0];
+    assert_eq!(m["opponent"], "bob");
+    assert_eq!(m["status"], "finished");
+    let won = m["won"].as_bool().unwrap();
+    assert_eq!(
+        m["rating_after"].as_f64().unwrap(),
+        if won { 1516.0 } else { 1484.0 }
+    );
+    let id = m["id"].as_i64().unwrap();
+
+    let r = call(
+        &app,
+        "GET",
+        &format!("/api/matches/{id}/hands"),
+        Value::Null,
+        Some(&alice),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let hands = r.body.as_array().unwrap();
+    assert_eq!(hands.len() as i64, m["hands_played"].as_i64().unwrap());
+    for h in hands {
+        let text = h["text"].as_str().unwrap();
+        assert!(text.contains("Dealt to alice"));
+        assert!(!text.contains("Dealt to bob"));
+    }
+    // Not a participant: indistinguishable from a match that doesn't exist.
+    let r = call(
+        &app,
+        "GET",
+        &format!("/api/matches/{id}/hands"),
+        Value::Null,
+        Some(&eve),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = call(
+        &app,
+        "GET",
+        "/api/matches/999999/hands",
+        Value::Null,
+        Some(&eve),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = call(&app, "GET", "/api/matches", Value::Null, None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let r = call(&app, "GET", "/api/leaderboard", Value::Null, None).await;
+    assert_eq!(r.body.as_array().unwrap().len(), 2);
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn serves_the_web_client_with_security_headers(db: PgPool) {
+    let dir = std::env::temp_dir().join(format!("pl-static-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.html"), "<!doctype html>app").unwrap();
+    std::fs::write(dir.join("assets/x.js"), "1").unwrap();
+    let mut a = app(db, true);
+    let mut config = a.state.config.clone();
+    config.static_dir = Some(dir.clone());
+    let state = AppState::new(
+        config,
+        a.state.db.clone(),
+        a.mail.clone(),
+        MatchConfig::standard(),
+        Timing::STANDARD,
+    );
+    a.router = router(state);
+    let get = |path: &'static str| {
+        let router = a.router.clone();
+        async move {
+            router
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+        }
+    };
+    let res = get("/assets/x.js").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers()["cache-control"],
+        "public, max-age=31536000, immutable"
+    );
+    // A missing asset is a 404 (not index.html, which would then be cached forever).
+    let res = get("/assets/gone.js").await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert_ne!(
+        res.headers().get("cache-control").unwrap(),
+        "public, max-age=31536000, immutable"
+    );
+    // Client-side routes fall back to index.html.
+    let res = get("/verify-email?token=abc").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let h = res.headers().clone();
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], b"<!doctype html>app");
+    let csp = h["content-security-policy"].to_str().unwrap();
+    assert!(csp.contains("default-src 'self'"));
+    assert!(
+        csp.contains("connect-src 'self' ws://localhost:8080;"),
+        "{csp}"
+    );
+    assert_eq!(h["cache-control"], "no-cache");
+    assert_eq!(h["referrer-policy"], "no-referrer");
+    assert_eq!(h["x-frame-options"], "DENY");
+    assert_eq!(h["x-content-type-options"], "nosniff");
+    // Unknown API paths are a 404, not the app.
+    assert_eq!(get("/api/nope").await.status(), StatusCode::NOT_FOUND);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+async fn register(app: &App, name: &str, email: &str) -> Res {
+    call(
+        app,
+        "POST",
+        "/api/register",
+        json!({"name": name, "email": email, "password": "longenough"}),
+        None,
+    )
+    .await
+}
+
+fn reset_mails(app: &App, to: &str) -> usize {
+    let sent = app.mail.sent.lock().unwrap();
+    sent.iter()
+        .filter(|e| e.to == to && e.subject.contains("Reset"))
+        .count()
+}
+
+/// Requests a reset for `email` and (since the request is handled in the
+/// background) waits until `to` has received `expect` reset emails in total.
+async fn request_reset(app: &App, email: &str, to: &str, expect: usize) {
+    let r = call(
+        app,
+        "POST",
+        "/api/password-reset/request",
+        json!({ "email": email }),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    for _ in 0..200 {
+        if reset_mails(app, to) >= expect {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(reset_mails(app, to), expect, "reset emails to {to}");
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn password_reset(db: PgPool) {
+    let app = app(db, true);
+    let old = signup(&app, "alice").await;
+    // Unknown addresses get the same answer and no email.
+    let sent = app.mail.sent.lock().unwrap().len();
+    request_reset(&app, "nobody@example.com", "nobody@example.com", 0).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(app.mail.sent.lock().unwrap().len(), sent);
+    request_reset(&app, " ALICE@example.com ", "alice@example.com", 1).await;
+    let token = app.mail.token_for("alice@example.com").unwrap();
+
+    let confirm = |token: String, password: &'static str| {
+        let app = &app;
+        async move {
+            call(
+                app,
+                "POST",
+                "/api/password-reset/confirm",
+                json!({"token": token, "password": password}),
+                None,
+            )
+            .await
+            .status
+        }
+    };
+    assert_eq!(
+        confirm(token.clone(), "short").await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        confirm("bogus".into(), "newpassword").await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        confirm(token.clone(), "newpassword").await,
+        StatusCode::NO_CONTENT
+    );
+    // Single use; old sessions and the old password are gone.
+    assert_eq!(confirm(token, "another-one").await, StatusCode::BAD_REQUEST);
+    let r = call(&app, "GET", "/api/me", Value::Null, Some(&old)).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert!(login(&app, "alice", "hunter2hunter2").await.is_none());
+    assert!(login(&app, "alice", "newpassword").await.is_some());
+
+    // A reset proves the address, so it verifies an unverified account (this is how
+    // someone recovers an email that was registered by somebody else).
+    assert_eq!(
+        register(&app, "squatter", "bob@example.com").await.status,
+        StatusCode::ACCEPTED
+    );
+    request_reset(&app, "bob@example.com", "bob@example.com", 1).await;
+    let token = app.mail.token_for("bob@example.com").unwrap();
+    assert_eq!(
+        confirm(token, "bobs-password").await,
+        StatusCode::NO_CONTENT
+    );
+    let cookie = login(&app, "bob@example.com", "bobs-password")
+        .await
+        .unwrap();
+    let r = call(&app, "GET", "/api/me", Value::Null, Some(&cookie)).await;
+    assert_eq!(r.body["email_verified"], true);
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn registration_does_not_reveal_emails(db: PgPool) {
+    let app = app(db.clone(), true);
+    signup(&app, "alice").await;
+    // A sign-up with a registered email and a new name: same answer as a fresh one...
+    let taken = register(&app, "probe", "alice@example.com").await;
+    let fresh = register(&app, "probe2", "new@example.com").await;
+    assert_eq!((taken.status, &taken.body), (fresh.status, &fresh.body));
+    // ...and the name then looks taken either way.
+    for name in ["probe", "PROBE2"] {
+        let r = register(&app, name, "other@example.com").await;
+        assert_eq!(
+            (r.status, r.body["error"].as_str()),
+            (StatusCode::CONFLICT, Some("name_taken")),
+            "{name}"
+        );
+    }
+    assert!(
+        app.mail
+            .last_to("alice@example.com")
+            .unwrap()
+            .subject
+            .contains("sign-up attempt")
+    );
+    // Still the same later on: past a day (the reservation must outlast the
+    // unverified account, which can't be purged for 48 hours)...
+    let age = |hours: i32| {
+        let db = db.clone();
+        async move {
+            for q in [
+                "UPDATE users SET created_at = created_at - make_interval(hours => $1)",
+                "UPDATE name_reservations SET expires_at = expires_at - make_interval(hours => $1)",
+            ] {
+                sqlx::query(q).bind(hours).execute(&db).await.unwrap();
+            }
+        }
+    };
+    age(30).await;
+    for (name, email) in [("probe", "o2@example.com"), ("probe2", "o3@example.com")] {
+        assert_eq!(
+            register(&app, name, email).await.status,
+            StatusCode::CONFLICT,
+            "{name} after 30 h"
+        );
+    }
+    // ...and once both have lapsed, both names are free again.
+    age(24).await;
+    for (name, email) in [("probe", "o4@example.com"), ("probe2", "o5@example.com")] {
+        assert_eq!(
+            register(&app, name, email).await.status,
+            StatusCode::ACCEPTED,
+            "{name} after 54 h"
+        );
+    }
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn stale_unverified_accounts_give_up_their_name_and_email(db: PgPool) {
+    let app = app(db.clone(), true);
+    assert_eq!(
+        register(&app, "squat", "victim@example.com").await.status,
+        StatusCode::ACCEPTED
+    );
+    // Fresh: still holds both.
+    assert_eq!(
+        register(&app, "squat", "x@example.com").await.status,
+        StatusCode::CONFLICT
+    );
+    // Real accounts are never purged: verified ones, and unverified ones that have
+    // played (matches reference them).
+    signup(&app, "verified").await;
+    register(&app, "player", "player@example.com").await;
+    sqlx::query(
+        "INSERT INTO matches (player0, player1)
+         SELECT p.id, v.id FROM users p, users v WHERE p.name = 'player' AND v.name = 'verified'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET created_at = now() - interval '3 days'")
+        .execute(&db)
+        .await
+        .unwrap();
+    // A taken name is a 409; a taken email looks like success (202) whether or not it
+    // freed the address, so the users table is checked below.
+    for (name, email, status) in [
+        ("verified", "a@example.com", StatusCode::CONFLICT),
+        ("b", "verified@example.com", StatusCode::ACCEPTED),
+        ("player", "c@example.com", StatusCode::CONFLICT),
+        ("d", "player@example.com", StatusCode::ACCEPTED),
+    ] {
+        assert_eq!(
+            register(&app, name, email).await.status,
+            status,
+            "{name} / {email}"
+        );
+    }
+    let r = register(&app, "victim", "victim@example.com").await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let mail = app.mail.last_to("victim@example.com").unwrap();
+    assert!(mail.subject.contains("Confirm"), "{}", mail.subject);
+    let mut names: Vec<String> = sqlx::query_scalar("SELECT name FROM users")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    names.sort();
+    assert_eq!(names, ["player", "verified", "victim"]);
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn emails_per_recipient_are_capped(db: PgPool) {
+    let app = app(db, true);
+    signup(&app, "alice").await; // 1 email
+    let count = || {
+        app.mail
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.to == "alice@example.com")
+            .count()
+    };
+    // Anyone can trigger "already registered" notices: one per 6 hours gets through.
+    for i in 0..5 {
+        register(&app, &format!("p{i}"), "alice@example.com").await;
+    }
+    assert_eq!(count(), 2);
+    // ...and they don't use up what the owner asks for: 2 reset emails left of 3.
+    for n in 1..=2 {
+        request_reset(&app, "alice@example.com", "alice@example.com", n).await;
+    }
+    let r = call(
+        &app,
+        "POST",
+        "/api/password-reset/request",
+        json!({"email": "alice@example.com"}),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        reset_mails(&app, "alice@example.com"),
+        2,
+        "capped at 3 in all"
+    );
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn websocket_floods_are_refused_then_disconnected(db: PgPool) {
+    let app = app(db, true);
+    let cookie = signup(&app, "flood").await;
+    let addr = serve(&app).await;
+    let mut ws = ws_connect(addr, Some(&cookie), Some(ORIGIN)).await.unwrap();
+    assert!(matches!(
+        recv(&mut ws).await,
+        Some(ServerMsg::Hello {
+            email_verified: true,
+            in_match: false,
+            ..
+        })
+    ));
+    // A little over the burst: the excess is refused, the connection stays up.
+    for _ in 0..30 {
+        ws.send(tungstenite::Message::text("{}")).await.unwrap();
+    }
+    recv_until(&mut ws, |m| {
+        matches!(
+            m,
+            ServerMsg::Error {
+                code: ErrorCode::RateLimited,
+                ..
+            }
+        )
+    })
+    .await;
+    // Keep going and the server hangs up (queued replies may be cut off, so only
+    // the close is checked).
+    for _ in 0..300 {
+        if ws.send(tungstenite::Message::text("{}")).await.is_err() {
+            break;
+        }
+    }
+    while recv(&mut ws).await.is_some() {}
 }

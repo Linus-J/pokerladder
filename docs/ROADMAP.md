@@ -96,12 +96,14 @@ invariant validation to cut startup time.
 
 ## Status (2026-11-15)
 
-Phase 1 (engine) complete and merged into `main`. Phase 2 (server) is functionally
-complete on branch `phase-2-server`: accounts, matchmaking, match actors, WebSocket
-protocol, persistence and Elo ratings, tested end to end against Postgres (two
-WebSocket clients queue, play a whole match, and the rated result and every hand's
-audit log land in the database). Remaining before launch: a real mailer, login rate
-limiting, and the web client (Phase 3).
+Phases 1 (engine) and 2 (server) are merged into `main`. Phase 3 (web client) is
+on branch `phase-3-web`: a playable Svelte client served by the server, plus the
+Phase 2 launch blockers (SMTP mail, rate limiting, no email enumeration, history
+API). Browser tests play a whole match between two real browsers.
+
+**Before a public launch (needs the owner):** an SMTP provider and DNS (SPF/DKIM)
+for the sending domain; a host + domain + TLS reverse proxy; solicitor review of the
+privacy notice (draft in the app) and the competition terms (not yet written).
 
 ## Phases
 
@@ -160,24 +162,67 @@ limiting, and the web client (Phase 3).
       cards incl. folded/mucked) plus rendered histories for each seat and the audit
       view. Match result + Elo update (K=32) in one transaction, idempotent on retry.
       Matches interrupted by a restart are marked `abandoned` (unrated).
-- [ ] Real mail transport (only a logging mailer so far: `mail::Mailer` trait).
-- [ ] Rate limiting for login/register (per IP and per account) and per-connection
-      WebSocket message limits. (Argon2 is already capped at one hash per CPU.)
-- [ ] Registration reveals whether an email is registered (`email_taken`); switch
-      to "check your inbox" for both cases once a real mailer exists.
+- [x] SMTP mail (`SMTP_URL`, lettre, sent in the background, at most 8 at once);
+      the server refuses to start with an https `PUBLIC_URL` and no SMTP, and logs an
+      error (but still starts) if the SMTP login check fails. Without SMTP, emails
+      are logged (development). Per recipient: at most 3 verification/reset emails
+      per 2 hours, and separately 1 "already registered" notice per 6 hours (anyone
+      can trigger those, so they mustn't use up the owner's allowance).
+- [x] Rate limits (in-memory token buckets, single process): login per IP (IPv6 per
+      /64), failed logins per account, register, verify-email, password reset;
+      per-connection WebSocket message limit (burst 20, 10/s; disconnect after 100
+      refused in a row). Argon2 capped at one hash per CPU; oversized logins are
+      refused before any limiter. Client IP from the peer or `TRUSTED_PROXY_HEADER`
+      (rightmost entry; see `.env.example` for CDN setups).
+      The per-account bucket is keyed by the login as typed (name and email are
+      separate buckets), never by the account it resolves to, so a 429 can't confirm
+      which email belongs to a player. A token is taken before hashing (concurrent
+      guesses can't slip through) and refunded on success (only failures count).
+      Trade-off: 10 wrong passwords lock that login string for ~30 s per further
+      attempt, so a stranger can keep a player's name locked out (their email still
+      works); per-IP limits bound how cheaply. Revisit with CAPTCHA or per-device
+      trust if it is abused.
+- [x] Registration doesn't reveal registered emails: the same 202 response, the
+      address owner gets an "already registered" email, and the requested name is
+      reserved for 48 h (as long as an unverified account holds its name) so a
+      follow-up sign-up can't probe it either. Reset requests are processed in the
+      background so response time doesn't reveal registered emails.
+- [x] Password reset (`/api/password-reset/{request,confirm}`, 1 h single-use
+      link): always 202; on success sets the password, verifies the email, ends all
+      sessions and closes the live socket. Never-verified accounts older than 48 h
+      with no matches give up their name/email to a new sign-up, so an email can't
+      be squatted.
 - [ ] If `finish_match` fails 5 times (~15 s) the result is lost and the match is
       later marked abandoned; consider a pending-results table + reconciler.
 - [ ] Single-instance only: startup marks every `in_progress` match abandoned.
-- [ ] Disclose audit-log retention (all hole cards) in the competition terms /
-      privacy notice.
-- [ ] Hand-history and match-history endpoints for the web client.
+- [x] Draft privacy notice (`/privacy`) discloses audit-log retention.
+      **Needs legal review**, together with competition terms (not yet written).
+- [x] `GET /api/matches`, `GET /api/matches/{id}/hands` (own seat's view only;
+      404 for other players' matches), `POST /api/resend-verification`.
+- [x] Serves the built client (`STATIC_DIR`, SPA fallback) with CSP (WebSocket
+      origin from `PUBLIC_URL`), no-referrer, nosniff and frame-deny headers;
+      hashed `/assets` cached immutably, missing assets 404.
 
 ### 3. Web client
-- [ ] Lobby / queue, table view, action controls, hand-history viewer, leaderboard.
-- [ ] Rewrite `README.md` for the new project once something is runnable: what it
-      is, the free-entry prize model, architecture, local setup (Rust, Postgres,
-      Node), running tests/benches, and a pointer to `legacy/`. The current README
-      still describes the old C# client.
+- [x] Svelte 5 + Vite + TypeScript SPA (`web/`), ~29 kB gzipped JS. Pages: landing
+      + leaderboard, register / login / verify-email, lobby + queue, table, match
+      and hand history, privacy. Protocol types generated from Rust (`ts-rs`).
+- [x] Table: four-colour deck, bets and pot, dealer button, decision clock, hand
+      log, bet sizing (min / ½ pot / pot / all-in, slider, keyboard F/C/R),
+      auto-muck toggle, result overlay with rating change. Usable at phone width.
+- [x] Reconnects automatically (snapshot rebuilds the table, including auto-muck);
+      "opened in another tab" handling; a match that ended while offline is cleared
+      with a pointer to History. One action in flight at a time (no double-acting
+      from double clicks or held keys).
+- [x] Table state is a pure reducer, unit-tested and checked step by step against
+      seeded matches played by the real engine (`engine-fixture.json`, generated by
+      `crates/server/tests/client_fixture.rs`), including chip conservation.
+- [x] Forgot / reset password pages.
+- [x] Browser tests (Playwright): two players sign up, queue, play a whole match
+      through the UI, see the result and their own-seat hand history; phone layout.
+- [x] `README.md` rewritten for the new project; `.env.example`.
+- [ ] Nice to have: sounds, animations, spectating, a hand replayer, per-player
+      profile pages.
 
 ### 4. Seasons & integrity
 - [ ] Monthly seasons; minimum matches to qualify.

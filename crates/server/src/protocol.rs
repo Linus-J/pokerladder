@@ -42,6 +42,10 @@ pub enum ServerMsg {
         user_id: UserId,
         name: String,
         rating: f64,
+        email_verified: bool,
+        /// Whether the user is seated in a live match (a `MatchState` follows if so).
+        /// A client still showing a table when this is false missed the match's end.
+        in_match: bool,
     },
     Queued,
     QueueLeft,
@@ -86,6 +90,7 @@ pub enum ErrorCode {
     NotInMatch,
     IllegalAction,
     Unavailable,
+    RateLimited,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -108,6 +113,8 @@ pub struct MatchSnapshot {
     pub hand: Option<HandSnapshot>,
     pub turn: Option<TurnInfo>,
     pub winner: Option<u8>,
+    /// The receiving player's auto-muck setting (takes effect from the next hand).
+    pub auto_muck: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -461,6 +468,11 @@ mod tests {
             WireLegal::decl(),
             WirePublicState::decl(),
             WireEvent::decl(),
+            crate::auth::MeResponse::decl(),
+            crate::auth::RegisterResponse::decl(),
+            crate::db::LeaderboardRow::decl(),
+            crate::history::MatchSummary::decl(),
+            crate::history::HandHistory::decl(),
         ];
         let mut out = String::from(
             "// Generated from crates/server/src/protocol.rs by the `export_bindings` test.\n\

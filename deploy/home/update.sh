@@ -9,6 +9,8 @@ cd "$repo"
 git pull --ff-only
 cargo build --release -p pokerladder-server
 (cd web && npm ci && npm run build)
+# The unit files are symlinks into this checkout: pick up any changes to them.
+systemctl --user daemon-reload
 echo "restarting: waiting for any matches in progress to finish..."
 systemctl --user restart pokerladder.service
 systemctl --user --no-pager status pokerladder.service | head -5

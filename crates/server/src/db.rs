@@ -510,6 +510,52 @@ pub async fn abandon_unfinished_matches(db: &PgPool) -> anyhow::Result<u64> {
     .rows_affected())
 }
 
+/// At startup, before [`abandon_unfinished_matches`]: finishes every match still
+/// `in_progress` whose last stored hand ends with `MatchOver` (the match was decided
+/// but its result never reached the database, e.g. the database was down and the
+/// server then restarted). The winner and hand count come from that audit log, so
+/// nothing is guessed. Rated matches count towards the season current *now*. Returns
+/// the matches finished.
+pub async fn recover_decided_matches(db: &PgPool) -> anyhow::Result<Vec<MatchId>> {
+    // Decoded per row: one unreadable log (e.g. written by an older version) must not
+    // stop the others, or the server, starting.
+    let last: Vec<(MatchId, i32, Json<serde_json::Value>)> = sqlx::query_as(
+        "SELECT DISTINCT ON (h.match_id) h.match_id, h.number, h.audit_events
+         FROM hands h JOIN matches m ON m.id = h.match_id
+         WHERE m.status = 'in_progress'
+         ORDER BY h.match_id, h.number DESC",
+    )
+    .fetch_all(db)
+    .await?;
+    let store = PgStore { db: db.clone() };
+    let mut recovered = Vec::new();
+    for (match_id, number, Json(events)) in last {
+        let events: Vec<WireEvent> = match serde_json::from_value(events) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!(match_id, "unreadable audit log, can't recover: {e}");
+                continue;
+            }
+        };
+        let winner = events.iter().find_map(|e| match e {
+            WireEvent::MatchOver { winner } => crate::protocol::seat_from_u8(*winner),
+            _ => None,
+        });
+        let Some(winner) = winner else { continue };
+        let finish = MatchFinish {
+            match_id,
+            winner,
+            hands_played: number as u32,
+        };
+        // One bad match shouldn't stop the server starting; it is then abandoned.
+        match store.finish_match(&finish).await {
+            Ok(_) => recovered.push(match_id),
+            Err(e) => tracing::error!(match_id, "couldn't finish decided match: {e:#}"),
+        }
+    }
+    Ok(recovered)
+}
+
 pub struct PgStore {
     pub db: PgPool,
 }

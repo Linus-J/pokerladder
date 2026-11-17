@@ -73,7 +73,8 @@ pub enum ServerMsg {
         /// Whether the match counted (see [`MatchSnapshot::rated`]).
         rated: bool,
         /// Season ratings, indexed by seat; `None` if unrated or if the result
-        /// could not be recorded.
+        /// couldn't be recorded yet (the server keeps retrying; standings update
+        /// once it is).
         ratings: Option<[RatingChange; 2]>,
     },
     /// A request was refused; nothing changed.

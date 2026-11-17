@@ -442,6 +442,118 @@ async fn finishing_a_match_updates_ratings_once(db: PgPool) {
     assert!(db::create_match(&db, [ids[1], ids[0]]).await.unwrap().rated);
 }
 
+/// Plays a whole match with the real engine and returns its hands as the actor would
+/// record them. Seat 0 min-raises whenever it can and seat 1 never puts chips in, so
+/// seat 0 wins after many hands (one blind at a time) without a showdown.
+fn played_hands(match_id: i64) -> Vec<pokerladder_server::table::HandRecord> {
+    use pokerladder_engine::holdem::Action;
+    use pokerladder_engine::{Deck, Match};
+    let mut m = Match::new(MatchConfig::standard(), Seat::Zero).unwrap();
+    let mut hands = Vec::new();
+    while m.winner().is_none() {
+        let mut events = m.start_hand(Deck::shuffled(&mut rand::rng())).unwrap();
+        while let Some(legal) = m.hand().and_then(|h| h.legal()) {
+            let a = match (legal.seat, legal.raise) {
+                (Seat::Zero, Some(r)) => Action::RaiseTo(r.min_to),
+                (Seat::Zero, None) if legal.call.is_some() => Action::Call,
+                _ => legal.passive_default(),
+            };
+            events.extend(m.act(legal.seat, a, Duration::ZERO).unwrap());
+        }
+        hands.push(pokerladder_server::table::HandRecord {
+            match_id,
+            number: m.hands_played(),
+            started_at: time::OffsetDateTime::now_utc(),
+            names: ["p0".into(), "p1".into()],
+            events,
+        });
+    }
+    hands
+}
+
+/// A match decided while the database was unreachable, then a restart: startup
+/// finishes it from its audit log (winner and hand count from `MatchOver`) instead of
+/// abandoning it. A match cut off mid-way is left to be abandoned.
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn startup_finishes_decided_matches_from_the_audit_log(db: PgPool) {
+    pokerladder_engine::eval::init();
+    let mut ids = vec![];
+    for n in ["p0", "p1"] {
+        match db::create_user(&db, n, &format!("{n}@x.io"), "h")
+            .await
+            .unwrap()
+        {
+            db::CreateUser::Created(id) => ids.push(id),
+            db::CreateUser::Taken(_) => panic!(),
+        }
+    }
+    let store = PgStore { db: db.clone() };
+    // Decided: every hand stored, including the last (with MatchOver), no result.
+    let decided = db::create_match(&db, [ids[0], ids[1]]).await.unwrap();
+    let hands = played_hands(decided.id);
+    let winner = hands
+        .last()
+        .unwrap()
+        .events
+        .iter()
+        .find_map(|e| match e {
+            pokerladder_engine::MatchEvent::MatchOver { winner } => Some(*winner),
+            _ => None,
+        })
+        .unwrap();
+    assert!(hands.len() >= 2);
+    // Stored newest first, so the last hand is the one with the highest number, not
+    // the latest row.
+    for h in hands.iter().rev() {
+        store.record_hand(h).await.unwrap();
+    }
+    // Interrupted: only the first hand stored.
+    let cut = db::create_match(&db, [ids[1], ids[0]]).await.unwrap();
+    store
+        .record_hand(&played_hands(cut.id).swap_remove(0))
+        .await
+        .unwrap();
+    // Decided, but its log can't be read (e.g. written by an older version): skipped,
+    // without stopping the others.
+    let unreadable = db::create_match(&db, [ids[0], ids[1]]).await.unwrap();
+    store
+        .record_hand(played_hands(unreadable.id).last().unwrap())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE hands SET audit_events = '[{\"NoSuchEvent\":1}]' WHERE match_id = $1")
+        .bind(unreadable.id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        db::recover_decided_matches(&db).await.unwrap(),
+        vec![decided.id]
+    );
+    // Idempotent: nothing left to recover.
+    assert!(db::recover_decided_matches(&db).await.unwrap().is_empty());
+    assert_eq!(db::abandon_unfinished_matches(&db).await.unwrap(), 2);
+
+    type Row = (i64, String, Option<i16>, Option<i32>, Option<String>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, status, winner_seat, hands_played, season FROM matches ORDER BY id",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(rows[0].0, decided.id);
+    assert_eq!(rows[0].1, "finished");
+    assert_eq!(rows[0].2, Some(winner.index() as i16));
+    assert_eq!(rows[0].3, Some(hands.len() as i32));
+    assert!(rows[0].4.is_some(), "rated: counted towards a season");
+    assert_eq!((rows[1].0, rows[1].1.as_str()), (cut.id, "abandoned"));
+    let wins: i64 = sqlx::query_scalar("SELECT sum(wins) FROM season_ratings")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(wins, 1);
+}
+
 #[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
 async fn standings_rank_qualified_players_by_cautious_rating(db: PgPool) {
     let mut ids = vec![];

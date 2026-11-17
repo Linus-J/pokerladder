@@ -200,8 +200,22 @@ privacy notice (draft in the app) and the competition terms (not yet written).
       sessions and closes the live socket. Never-verified accounts older than 48 h
       with no matches give up their name/email to a new sign-up, so an email can't
       be squatted.
-- [ ] If `finish_match` fails 5 times (~15 s) the result is lost and the match is
-      later marked abandoned; consider a pending-results table + reconciler.
+- [x] Results survive database outages. Hands that fail their quick retries (5,
+      then 1 each once one has failed) are kept by the match actor; whatever is still
+      unstored (hands and/or the result) goes to `table::settle` once the players are
+      free, which retries with back-off (1 s doubling to 1 min) for up to 6 hours, in
+      the tracked match task (a graceful shutdown waits for it, up to its drain
+      timeout), and stops at once on an error retrying can't fix
+      (`table::is_transient`). The pool's acquire timeout is 5 s so an outage fails
+      fast. Storing is idempotent. Players are told the result isn't saved yet;
+      standings pick it up when it is (in the season current then: a match decided
+      just before midnight UTC at a month's end can land in the next season). On
+      startup, `db::recover_decided_matches` finishes every `in_progress`
+      match whose last stored hand has `MatchOver` (winner and hand count from the
+      audit log; counts towards the season current at recovery) before the rest are
+      abandoned. No new table: the audit log already holds the decision. Not covered:
+      a restart while the final hand itself is still unstored (that match is
+      abandoned, as before).
 - [ ] Single-instance only: startup marks every `in_progress` match abandoned.
 - [x] Graceful shutdown (SIGINT/SIGTERM): the queue closes, everyone online gets a
       `restarting` notice, matches in progress play to the end while players can

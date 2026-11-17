@@ -7,6 +7,7 @@ const snapshot: MatchSnapshot = {
   seat: 1,
   names: ['alice', 'bob'],
   ratings: [1500, 1520],
+  rated: true,
   hands_played: 0,
   stacks: [1500, 1500],
   time_banks_ms: [60000, 60000],

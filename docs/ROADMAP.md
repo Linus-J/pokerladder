@@ -229,11 +229,19 @@ privacy notice (draft in the app) and the competition terms (not yet written).
       profile pages.
 
 ### 4. Seasons & integrity
-- [ ] Monthly seasons; minimum matches to qualify.
-- [ ] Rating with uncertainty (Glicko-2) so early leaders can't "sit" on a rating.
-- [ ] Anti-abuse: diminishing gains vs repeat opponents, chip-dumping heuristics
-      run over the audit log (e.g. folding strong hands to a specific opponent),
-      one account per person, identity check before any payout.
+- [x] Monthly seasons (UTC calendar months, `season_ratings`): everyone restarts at
+      1500 each month; 20 rated matches to be ranked; past seasons stay viewable.
+- [x] Glicko-2 (`rating.rs`, checked against Glickman's worked example): one
+      rating period per match; each idle day counts as 6 empty periods. Standings
+      rank by rating - 2 RD, so sitting on a lead doesn't pay (20 idle days cost a
+      settled player about 150 points of score). Volatility per 1-game period is
+      noisier than Glickman intends, accepted for instant updates. A separate lifetime
+      Glicko-2 rating drives matchmaking only. Beta Elo ratings were reset.
+- [x] Repeat opponents: only a pair's first 3 matches in any 24 hours are rated;
+      later ones are played unrated and the table says so before the first hand.
+- [ ] Chip-dumping heuristics run over the audit log (e.g. folding strong hands
+      to a specific opponent), surfaced as reports to review before any payout.
+- [ ] One account per person; identity check before any payout.
 
 ### 5. Prizes
 - **Model: free entry, sponsor-funded prize.** No payment of any kind is required to

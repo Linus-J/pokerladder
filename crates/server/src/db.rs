@@ -15,20 +15,33 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 pub struct User {
     pub id: UserId,
     pub name: String,
+    /// The long-running rating, used for matchmaking only.
     pub rating: f64,
     pub email_verified: bool,
+    /// This season's rating (what players see) and rated matches so far.
+    pub season_rating: f64,
+    pub season_matches: i32,
 }
 
-type UserRow = (UserId, String, f64, bool);
+type UserRow = (UserId, String, f64, bool, f64, i32);
 
-fn user((id, name, rating, email_verified): UserRow) -> User {
+fn user((id, name, rating, email_verified, season_rating, season_matches): UserRow) -> User {
     User {
         id,
         name,
         rating,
         email_verified,
+        season_rating,
+        season_matches,
     }
 }
+
+/// The columns of a [`UserRow`], for a query over `users u`.
+const USER_COLUMNS: &str = "u.id, u.name, u.rating, u.email_verified_at IS NOT NULL,
+    COALESCE(sr.rating, 1500), COALESCE(sr.matches, 0)";
+/// Joins the current season's rating as `sr`.
+const SEASON_JOIN: &str =
+    "LEFT JOIN season_ratings sr ON sr.user_id = u.id AND sr.season = current_season()";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Conflict {
@@ -208,9 +221,9 @@ pub async fn user_email(db: &PgPool, id: UserId) -> anyhow::Result<String> {
 }
 
 pub async fn user_by_id(db: &PgPool, id: UserId) -> anyhow::Result<Option<User>> {
-    let row: Option<UserRow> = sqlx::query_as(
-        "SELECT id, name, rating, email_verified_at IS NOT NULL FROM users WHERE id = $1",
-    )
+    let row: Option<UserRow> = sqlx::query_as(&format!(
+        "SELECT {USER_COLUMNS} FROM users u {SEASON_JOIN} WHERE u.id = $1"
+    ))
     .bind(id)
     .fetch_optional(db)
     .await?;
@@ -233,11 +246,11 @@ pub async fn create_session(
 }
 
 pub async fn session_user(db: &PgPool, token_hash: &[u8]) -> anyhow::Result<Option<User>> {
-    let row: Option<UserRow> = sqlx::query_as(
-        "SELECT u.id, u.name, u.rating, u.email_verified_at IS NOT NULL
-         FROM sessions s JOIN users u ON u.id = s.user_id
-         WHERE s.token_hash = $1 AND s.expires_at > now()",
-    )
+    let row: Option<UserRow> = sqlx::query_as(&format!(
+        "SELECT {USER_COLUMNS}
+         FROM sessions s JOIN users u ON u.id = s.user_id {SEASON_JOIN}
+         WHERE s.token_hash = $1 AND s.expires_at > now()"
+    ))
     .bind(token_hash)
     .fetch_optional(db)
     .await?;
@@ -294,57 +307,186 @@ pub async fn verify_email(db: &PgPool, token_hash: &[u8]) -> anyhow::Result<bool
     Ok(true)
 }
 
+/// One player's line in a season's standings.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
-pub struct LeaderboardRow {
+pub struct StandingRow {
     pub name: String,
     pub rating: f64,
-    pub rated_matches: i32,
+    /// The rating's deviation, aged for idle days up to now (or the season's end).
+    pub rd: f64,
+    /// `rating - 2 * rd`: what qualified players are ranked by.
+    pub score: f64,
+    pub matches: i32,
+    pub wins: i32,
+    /// Has played at least [`rating::QUALIFYING_MATCHES`] rated matches this season.
+    pub qualified: bool,
 }
 
-pub async fn leaderboard(db: &PgPool, limit: i64) -> anyhow::Result<Vec<LeaderboardRow>> {
-    let rows: Vec<(String, f64, i32)> = sqlx::query_as(
-        "SELECT name, rating, rated_matches FROM users WHERE rated_matches > 0
-         ORDER BY rating DESC, id LIMIT $1",
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+pub struct Standings {
+    /// `YYYY-MM` (UTC calendar month).
+    pub season: String,
+    /// Whether this is the season in progress.
+    pub current: bool,
+    pub qualifying_matches: i32,
+    /// Qualified players by score (best first), then everyone still qualifying by
+    /// matches played.
+    pub rows: Vec<StandingRow>,
+}
+
+/// Whether `s` looks like a season key (`YYYY-MM`).
+pub fn is_season(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 7
+        && b[4] == b'-'
+        && b[..4].iter().chain(&b[5..]).all(u8::is_ascii_digit)
+        && matches!(
+            &s[5..],
+            "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09" | "10" | "11" | "12"
+        )
+}
+
+/// A season's standings (the current season if `season` is `None`), at most `limit`
+/// rows of each kind. `season` must satisfy [`is_season`].
+pub async fn standings(
+    db: &PgPool,
+    season: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<Standings> {
+    let (season, current): (String, bool) = sqlx::query_as(
+        "SELECT COALESCE($1, current_season()), COALESCE($1, current_season()) = current_season()",
     )
-    .bind(limit)
+    .bind(season)
+    .fetch_one(db)
+    .await?;
+    // Deviations age until now, or until the end of a past season.
+    let rows: Vec<(String, f64, f64, f64, i32, i32, f64)> = sqlx::query_as(
+        "SELECT u.name, s.rating, s.rd, s.volatility, s.matches, s.wins,
+                EXTRACT(EPOCH FROM LEAST(now(),
+                    ((s.season || '-01')::date + interval '1 month') AT TIME ZONE 'UTC')
+                    - s.rated_at)::float8 / 86400
+         FROM season_ratings s JOIN users u ON u.id = s.user_id
+         WHERE s.season = $1",
+    )
+    .bind(&season)
     .fetch_all(db)
     .await?;
-    Ok(rows
+    let mut rows: Vec<StandingRow> = rows
         .into_iter()
-        .map(|(name, rating, rated_matches)| LeaderboardRow {
-            name,
-            rating,
-            rated_matches,
+        .map(|(name, r, rd, volatility, matches, wins, idle)| {
+            let g = rating::Glicko {
+                rating: r,
+                rd,
+                volatility,
+            }
+            .idle(idle);
+            StandingRow {
+                name,
+                rating: g.rating,
+                rd: g.rd,
+                score: g.cautious(),
+                matches,
+                wins,
+                qualified: matches >= rating::QUALIFYING_MATCHES,
+            }
         })
-        .collect())
+        .collect();
+    rows.sort_by(|a, b| {
+        b.qualified
+            .cmp(&a.qualified)
+            .then_with(|| {
+                if a.qualified {
+                    b.score.total_cmp(&a.score)
+                } else {
+                    b.matches.cmp(&a.matches).then(b.score.total_cmp(&a.score))
+                }
+            })
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    let qualified = rows.iter().filter(|r| r.qualified).count();
+    let mut rows: Vec<StandingRow> = rows
+        .into_iter()
+        .enumerate()
+        .filter(|&(i, _)| i < limit.min(qualified) || (i >= qualified && i < qualified + limit))
+        .map(|(_, r)| r)
+        .collect();
+    rows.shrink_to_fit();
+    Ok(Standings {
+        season,
+        current,
+        qualifying_matches: rating::QUALIFYING_MATCHES,
+        rows,
+    })
 }
 
-/// Creates the match row with `players[i]` in seat `i`; returns its id and the
-/// players' names and current ratings, by seat.
-pub async fn create_match(
-    db: &PgPool,
-    players: [UserId; 2],
-) -> anyhow::Result<(MatchId, [String; 2], [f64; 2])> {
+/// Seasons that have any rated match, newest first, always including the current one.
+pub async fn seasons(db: &PgPool) -> anyhow::Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT season FROM (
+             SELECT DISTINCT season FROM season_ratings
+             UNION SELECT current_season()
+         ) s ORDER BY season DESC",
+    )
+    .fetch_all(db)
+    .await?)
+}
+
+/// A new match between `players` (seated in that order).
+pub struct NewMatch {
+    pub id: MatchId,
+    pub names: [String; 2],
+    /// Season ratings, for display.
+    pub ratings: [f64; 2],
+    /// False if the pair has already started [`rating::PAIR_DAILY_LIMIT`] rated
+    /// matches in the last 24 hours (abandoned ones don't count).
+    pub rated: bool,
+}
+
+/// Creates a match. Two `create_match` calls for the same pair could in principle
+/// both see room in the daily quota, but a player is seated in only one match at a
+/// time, so the loser of that race is abandoned at once (and abandoned matches don't
+/// count): the quota holds.
+pub async fn create_match(db: &PgPool, players: [UserId; 2]) -> anyhow::Result<NewMatch> {
     let mut tx = db.begin().await?;
-    let id: MatchId =
-        sqlx::query_scalar("INSERT INTO matches (player0, player1) VALUES ($1, $2) RETURNING id")
-            .bind(players[0])
-            .bind(players[1])
-            .fetch_one(&mut *tx)
-            .await?;
+    let recent: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM matches
+         WHERE LEAST(player0, player1) = LEAST($1::bigint, $2::bigint)
+           AND GREATEST(player0, player1) = GREATEST($1::bigint, $2::bigint)
+           AND rated AND status <> 'abandoned'
+           AND started_at > now() - interval '24 hours'",
+    )
+    .bind(players[0])
+    .bind(players[1])
+    .fetch_one(&mut *tx)
+    .await?;
+    let rated = recent < rating::PAIR_DAILY_LIMIT;
+    let id: MatchId = sqlx::query_scalar(
+        "INSERT INTO matches (player0, player1, rated) VALUES ($1, $2, $3) RETURNING id",
+    )
+    .bind(players[0])
+    .bind(players[1])
+    .bind(rated)
+    .fetch_one(&mut *tx)
+    .await?;
     let mut names = [String::new(), String::new()];
     let mut ratings = [0.0; 2];
     for (i, p) in players.into_iter().enumerate() {
-        let (name, rating): (String, f64) =
-            sqlx::query_as("SELECT name, rating FROM users WHERE id = $1")
-                .bind(p)
-                .fetch_one(&mut *tx)
-                .await?;
+        let (name, rating): (String, f64) = sqlx::query_as(&format!(
+            "SELECT u.name, COALESCE(sr.rating, 1500) FROM users u {SEASON_JOIN} WHERE u.id = $1"
+        ))
+        .bind(p)
+        .fetch_one(&mut *tx)
+        .await?;
         names[i] = name;
         ratings[i] = rating;
     }
     tx.commit().await?;
-    Ok((id, names, ratings))
+    Ok(NewMatch {
+        id,
+        names,
+        ratings,
+        rated,
+    })
 }
 
 pub async fn abandon_match(db: &PgPool, id: MatchId) -> anyhow::Result<()> {
@@ -399,19 +541,23 @@ impl MatchStore for PgStore {
     }
 
     /// Idempotent: finishing an already-finished match returns the recorded ratings.
-    async fn finish_match(&self, result: &MatchFinish) -> anyhow::Result<[RatingChange; 2]> {
+    async fn finish_match(
+        &self,
+        result: &MatchFinish,
+    ) -> anyhow::Result<Option<[RatingChange; 2]>> {
         let mut tx = self.db.begin().await?;
         type Row = (
             UserId,
             UserId,
             String,
+            bool,
             Option<f64>,
             Option<f64>,
             Option<f64>,
             Option<f64>,
         );
-        let (p0, p1, status, b0, b1, a0, a1): Row = sqlx::query_as(
-            "SELECT player0, player1, status, rating_before0, rating_before1,
+        let (p0, p1, status, rated, b0, b1, a0, a1): Row = sqlx::query_as(
+            "SELECT player0, player1, status, rated, rating_before0, rating_before1,
                     rating_after0, rating_after1
              FROM matches WHERE id = $1 FOR UPDATE",
         )
@@ -419,10 +565,13 @@ impl MatchStore for PgStore {
         .fetch_one(&mut *tx)
         .await?;
         if status == "finished" {
+            if !rated {
+                return Ok(None);
+            }
             let (Some(b0), Some(b1), Some(a0), Some(a1)) = (b0, b1, a0, a1) else {
                 anyhow::bail!("finished match {} has no ratings", result.match_id);
             };
-            return Ok([
+            return Ok(Some([
                 RatingChange {
                     before: b0,
                     after: a0,
@@ -431,56 +580,160 @@ impl MatchStore for PgStore {
                     before: b1,
                     after: a1,
                 },
-            ]);
+            ]));
         }
         anyhow::ensure!(
             status == "in_progress",
             "match {} is {status}",
             result.match_id
         );
-        // Lock both rating rows in id order, so concurrent finishes can't deadlock.
-        let rows: Vec<(UserId, f64)> = sqlx::query_as(
-            "SELECT id, rating FROM users WHERE id = ANY($1) ORDER BY id FOR UPDATE",
+        let winner = result.winner.index();
+        let players = [p0, p1];
+        if !rated {
+            sqlx::query(
+                "UPDATE matches SET status = 'finished', winner_seat = $2, hands_played = $3,
+                        finished_at = now()
+                 WHERE id = $1",
+            )
+            .bind(result.match_id)
+            .bind(winner as i16)
+            .bind(result.hands_played as i32)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        // The long-running (matchmaking) ratings. Rows are locked in id order so
+        // concurrent finishes can't deadlock.
+        type Rated = (UserId, f64, f64, f64, Option<f64>);
+        let rows: Vec<Rated> = sqlx::query_as(
+            "SELECT id, rating, rd, volatility,
+                    EXTRACT(EPOCH FROM now() - rated_at)::float8 / 86400
+             FROM users WHERE id = ANY($1) ORDER BY id FOR UPDATE",
         )
-        .bind(vec![p0, p1])
+        .bind(players.to_vec())
         .fetch_all(&mut *tx)
         .await?;
-        let rating_of = |p: UserId| {
-            rows.iter()
-                .find(|r| r.0 == p)
-                .map(|r| r.1)
-                .ok_or_else(|| anyhow::anyhow!("user {p} vanished"))
-        };
-        let before = [rating_of(p0)?, rating_of(p1)?];
-        let after = rating::update(before, result.winner.index());
-        for (p, r) in [(p0, after[0]), (p1, after[1])] {
+        let lifetime = glickos(&rows, players)?;
+        let after = rating::match_result(lifetime.0, lifetime.1, winner);
+        ensure_finite(&after)?;
+        for (p, g) in players.into_iter().zip(after) {
             sqlx::query(
-                "UPDATE users SET rating = $2, rated_matches = rated_matches + 1 WHERE id = $1",
+                "UPDATE users SET rating = $2, rd = $3, volatility = $4, rated_at = now(),
+                        rated_matches = rated_matches + 1
+                 WHERE id = $1",
             )
             .bind(p)
-            .bind(r)
+            .bind(g.rating)
+            .bind(g.rd)
+            .bind(g.volatility)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // The season ratings: a new player in the season starts fresh.
+        let season: String = sqlx::query_scalar("SELECT current_season()")
+            .fetch_one(&mut *tx)
+            .await?;
+        let rows: Vec<Rated> = sqlx::query_as(
+            "SELECT user_id, rating, rd, volatility,
+                    EXTRACT(EPOCH FROM now() - rated_at)::float8 / 86400
+             FROM season_ratings WHERE season = $1 AND user_id = ANY($2)
+             ORDER BY user_id FOR UPDATE",
+        )
+        .bind(&season)
+        .bind(players.to_vec())
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut before = [rating::Glicko::NEW; 2];
+        let mut idle = [0.0; 2];
+        for (i, p) in players.into_iter().enumerate() {
+            if let Some(&(_, r, rd, volatility, days)) = rows.iter().find(|r| r.0 == p) {
+                before[i] = rating::Glicko {
+                    rating: r,
+                    rd,
+                    volatility,
+                };
+                idle[i] = days.unwrap_or(0.0);
+            }
+        }
+        let after = rating::match_result(before, idle, winner);
+        ensure_finite(&after)?;
+        for (i, p) in players.into_iter().enumerate() {
+            let g = after[i];
+            sqlx::query(
+                "INSERT INTO season_ratings
+                     (season, user_id, rating, rd, volatility, matches, wins, rated_at)
+                 VALUES ($1, $2, $3, $4, $5, 1, $6, now())
+                 ON CONFLICT (season, user_id) DO UPDATE SET
+                     rating = $3, rd = $4, volatility = $5,
+                     matches = season_ratings.matches + 1,
+                     wins = season_ratings.wins + $6, rated_at = now()",
+            )
+            .bind(&season)
+            .bind(p)
+            .bind(g.rating)
+            .bind(g.rd)
+            .bind(g.volatility)
+            .bind((i == winner) as i32)
             .execute(&mut *tx)
             .await?;
         }
         sqlx::query(
             "UPDATE matches SET status = 'finished', winner_seat = $2, hands_played = $3,
                     rating_before0 = $4, rating_before1 = $5,
-                    rating_after0 = $6, rating_after1 = $7, finished_at = now()
+                    rating_after0 = $6, rating_after1 = $7, season = $8, finished_at = now()
              WHERE id = $1",
         )
         .bind(result.match_id)
-        .bind(result.winner.index() as i16)
+        .bind(winner as i16)
         .bind(result.hands_played as i32)
-        .bind(before[0])
-        .bind(before[1])
-        .bind(after[0])
-        .bind(after[1])
+        .bind(before[0].rating)
+        .bind(before[1].rating)
+        .bind(after[0].rating)
+        .bind(after[1].rating)
+        .bind(&season)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok([0, 1].map(|i| RatingChange {
-            before: before[i],
-            after: after[i],
-        }))
+        Ok(Some([0, 1].map(|i| RatingChange {
+            before: before[i].rating,
+            after: after[i].rating,
+        })))
     }
+}
+
+/// Refuses to store a rating that isn't a number (only possible far outside realistic
+/// ranges); the match then stays unfinished rather than corrupting the standings.
+fn ensure_finite(g: &[rating::Glicko; 2]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        g.iter()
+            .all(|g| g.rating.is_finite() && g.rd.is_finite() && g.volatility.is_finite()),
+        "rating update produced a non-finite value: {g:?}"
+    );
+    Ok(())
+}
+
+/// Each player's rating and idle days from rows of `(id, rating, rd, volatility,
+/// idle days)`, by seat.
+fn glickos(
+    rows: &[(UserId, f64, f64, f64, Option<f64>)],
+    players: [UserId; 2],
+) -> anyhow::Result<([rating::Glicko; 2], [f64; 2])> {
+    let mut g = [rating::Glicko::NEW; 2];
+    let mut idle = [0.0; 2];
+    for (i, p) in players.into_iter().enumerate() {
+        let &(_, rating, rd, volatility, days) = rows
+            .iter()
+            .find(|r| r.0 == p)
+            .ok_or_else(|| anyhow::anyhow!("user {p} vanished"))?;
+        g[i] = rating::Glicko {
+            rating,
+            rd,
+            volatility,
+        };
+        idle[i] = days.unwrap_or(0.0);
+    }
+    Ok((g, idle))
 }

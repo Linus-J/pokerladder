@@ -3,7 +3,7 @@
 
 import type {
   HandHistory,
-  LeaderboardRow,
+  Standings,
   MatchSummary,
   MeResponse,
   RegisterResponse,
@@ -74,7 +74,9 @@ export const api = {
     call<void>('POST', '/api/password-reset/request', { email }),
   confirmPasswordReset: (token: string, password: string) =>
     call<void>('POST', '/api/password-reset/confirm', { token, password }),
-  leaderboard: () => call<LeaderboardRow[]>('GET', '/api/leaderboard'),
+  leaderboard: (season?: string) =>
+    call<Standings>('GET', season ? `/api/leaderboard?season=${encodeURIComponent(season)}` : '/api/leaderboard'),
+  seasons: () => call<string[]>('GET', '/api/seasons'),
   matches: () => call<MatchSummary[]>('GET', '/api/matches'),
   hands: (matchId: number) => call<HandHistory[]>('GET', `/api/matches/${matchId}/hands`),
 }

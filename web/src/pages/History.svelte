@@ -91,7 +91,7 @@
               <td>{m.opponent}</td>
               <td class={o.cls}>{o.text}</td>
               <td class="r num">
-                {#if d !== null}<span class={d >= 0 ? 'good' : 'bad'}>{d >= 0 ? '+' : ''}{d.toFixed(1)}</span>{/if}
+                {#if d !== null}<span class={d >= 0 ? 'good' : 'bad'}>{d >= 0 ? '+' : ''}{d.toFixed(1)}</span>{:else if m.status === 'finished' && !m.rated}<span class="muted">Unrated</span>{/if}
               </td>
             </tr>
           {/each}

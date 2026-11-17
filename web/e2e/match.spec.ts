@@ -71,7 +71,7 @@ test('two players queue, play a match and see the result', async ({ browser }) =
 
   const headings = await Promise.all(result.map((r) => r.getByRole('heading').textContent()))
   expect(headings.sort()).toEqual(['You lost the match', 'You won the match'])
-  for (const r of result) await expect(r).toContainText(/Rating 1500 → (1516|1484)/)
+  for (const r of result) await expect(r).toContainText(/ rating 1500 → (1662|1338)/)
 
   // History shows the match from each side.
   const page = pages[0]

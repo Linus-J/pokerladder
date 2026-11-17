@@ -1485,6 +1485,7 @@ dependencies = [
  "http-body-util",
  "lettre",
  "pokerladder-engine",
+ "proptest",
  "rand 0.10.4",
  "serde",
  "serde_json",

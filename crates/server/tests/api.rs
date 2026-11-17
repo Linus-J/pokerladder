@@ -16,6 +16,7 @@ use pokerladder_server::db::{self, PgStore};
 use pokerladder_server::mail::CaptureMailer;
 use pokerladder_server::protocol::{ClientMsg, ErrorCode, ServerMsg, WireAction, WireEvent};
 use pokerladder_server::ratelimit::RateLimits;
+use pokerladder_server::rating;
 use pokerladder_server::table::{MatchFinish, MatchStore, Timing};
 use pokerladder_server::{AppState, router};
 use rand::RngExt;
@@ -328,37 +329,249 @@ async fn finishing_a_match_updates_ratings_once(db: PgPool) {
         };
         ids.push(id);
     }
-    let (match_id, names, ratings) = db::create_match(&db, [ids[0], ids[1]]).await.unwrap();
-    assert_eq!(names, ["p0", "p1"]);
-    assert_eq!(ratings, [1500.0, 1500.0]);
+    let m = db::create_match(&db, [ids[0], ids[1]]).await.unwrap();
+    assert_eq!(m.names, ["p0", "p1"]);
+    assert_eq!(m.ratings, [1500.0, 1500.0]);
+    assert!(m.rated);
     let store = PgStore { db: db.clone() };
-    let finish = MatchFinish {
+    let finish = |match_id| MatchFinish {
         match_id,
         winner: Seat::One,
         hands_played: 42,
     };
-    let first = store.finish_match(&finish).await.unwrap();
-    assert_eq!((first[0].after, first[1].after), (1484.0, 1516.0));
+    let expected = rating::match_result([rating::Glicko::NEW; 2], [0.0; 2], 1);
+    let first = store.finish_match(&finish(m.id)).await.unwrap().unwrap();
+    assert_eq!(
+        (first[0].after, first[1].after),
+        (expected[0].rating, expected[1].rating)
+    );
+    assert!(first[1].after > 1500.0 && first[0].after < 1500.0);
     // Retrying (e.g. after a lost commit acknowledgement) doesn't apply it twice.
-    let again = store.finish_match(&finish).await.unwrap();
+    let again = store.finish_match(&finish(m.id)).await.unwrap().unwrap();
     assert_eq!(first, again);
-    let rows: Vec<(f64, i32)> =
-        sqlx::query_as("SELECT rating, rated_matches FROM users ORDER BY id")
+    // Both the matchmaking rating and the season rating moved, once.
+    let lifetime: Vec<(f64, f64, i32)> =
+        sqlx::query_as("SELECT rating, rd, rated_matches FROM users ORDER BY id")
             .fetch_all(&db)
             .await
             .unwrap();
-    assert_eq!(rows, vec![(1484.0, 1), (1516.0, 1)]);
-    let board = db::leaderboard(&db, 10).await.unwrap();
-    assert_eq!(board[0].name, "p1");
+    assert_eq!(
+        lifetime,
+        vec![
+            (expected[0].rating, expected[0].rd, 1),
+            (expected[1].rating, expected[1].rd, 1)
+        ]
+    );
+    let season: Vec<(String, f64, i32, i32, bool)> = sqlx::query_as(
+        "SELECT s.season, s.rating, s.matches, s.wins, s.season = current_season()
+         FROM season_ratings s ORDER BY user_id",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(season.len(), 2);
+    assert_eq!(
+        (season[0].1, season[0].2, season[0].3),
+        (expected[0].rating, 1, 0)
+    );
+    assert_eq!(
+        (season[1].1, season[1].2, season[1].3),
+        (expected[1].rating, 1, 1)
+    );
+    assert!(season[0].4 && db::is_season(&season[0].0));
+    let standings = db::standings(&db, None, 10).await.unwrap();
+    assert!(standings.current);
+    assert_eq!(standings.qualifying_matches, rating::QUALIFYING_MATCHES);
+    // Nobody has qualified yet: everyone is listed as still qualifying.
+    assert_eq!(standings.rows.len(), 2);
+    assert!(
+        standings
+            .rows
+            .iter()
+            .all(|r| !r.qualified && r.matches == 1)
+    );
 
-    // Abandoned matches can't be finished (no rating change).
-    let (m2, ..) = db::create_match(&db, [ids[0], ids[1]]).await.unwrap();
+    // Abandoned matches can't be finished, and don't use up the pair's daily quota.
+    let m2 = db::create_match(&db, [ids[0], ids[1]]).await.unwrap();
+    assert!(m2.rated);
     assert_eq!(db::abandon_unfinished_matches(&db).await.unwrap(), 1);
-    let finish2 = MatchFinish {
-        match_id: m2,
-        ..finish
+    assert!(store.finish_match(&finish(m2.id)).await.is_err());
+
+    // The same pair: matches 2 and 3 in a day are rated, the 4th is not (in either
+    // seating order), and finishing it changes no rating.
+    for _ in 0..2 {
+        let m = db::create_match(&db, [ids[1], ids[0]]).await.unwrap();
+        assert!(m.rated);
+        assert!(store.finish_match(&finish(m.id)).await.unwrap().is_some());
+    }
+    let before: Vec<(f64, i32)> =
+        sqlx::query_as("SELECT rating, matches FROM season_ratings ORDER BY user_id")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    let m4 = db::create_match(&db, [ids[0], ids[1]]).await.unwrap();
+    assert!(!m4.rated, "a pair's 4th match in 24 hours must be unrated");
+    assert_eq!(store.finish_match(&finish(m4.id)).await.unwrap(), None);
+    assert_eq!(store.finish_match(&finish(m4.id)).await.unwrap(), None);
+    let after: Vec<(f64, i32)> =
+        sqlx::query_as("SELECT rating, matches FROM season_ratings ORDER BY user_id")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(before, after);
+    let status: (String, bool, Option<String>) =
+        sqlx::query_as("SELECT status, rated, season FROM matches WHERE id = $1")
+            .bind(m4.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(status, ("finished".into(), false, None));
+
+    // A different pair still gets rated matches.
+    let id2 = match db::create_user(&db, "p2", "p2@x.io", "h").await.unwrap() {
+        db::CreateUser::Created(id) => id,
+        db::CreateUser::Taken(_) => panic!(),
     };
-    assert!(store.finish_match(&finish2).await.is_err());
+    assert!(db::create_match(&db, [ids[0], id2]).await.unwrap().rated);
+
+    // Matches older than a day no longer count towards the quota.
+    sqlx::query("UPDATE matches SET started_at = now() - interval '25 hours'")
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(db::create_match(&db, [ids[1], ids[0]]).await.unwrap().rated);
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn standings_rank_qualified_players_by_cautious_rating(db: PgPool) {
+    let mut ids = vec![];
+    for n in ["ann", "bea", "cal", "dot"] {
+        let db::CreateUser::Created(id) = db::create_user(&db, n, &format!("{n}@x.io"), "h")
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        ids.push(id);
+    }
+    // Season rows written directly: ann and bea have qualified (bea has the higher
+    // rating but is far less certain, so ann ranks first); cal and dot haven't.
+    let q = rating::QUALIFYING_MATCHES;
+    for (id, r, rd, matches) in [
+        (ids[0], 1700.0, 50.0, q),
+        (ids[1], 1800.0, 120.0, q + 5),
+        (ids[2], 2000.0, 60.0, q - 1),
+        (ids[3], 1600.0, 60.0, 3),
+    ] {
+        sqlx::query(
+            "INSERT INTO season_ratings (season, user_id, rating, rd, volatility, matches, wins, rated_at)
+             VALUES (current_season(), $1, $2, $3, 0.06, $4, 0, now())",
+        )
+        .bind(id)
+        .bind(r)
+        .bind(rd)
+        .bind(matches)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+    let s = db::standings(&db, None, 100).await.unwrap();
+    let order: Vec<(&str, bool)> = s
+        .rows
+        .iter()
+        .map(|r| (r.name.as_str(), r.qualified))
+        .collect();
+    assert_eq!(
+        order,
+        [("ann", true), ("bea", true), ("cal", false), ("dot", false)]
+    );
+    assert!((s.rows[0].score - (1700.0 - 2.0 * s.rows[0].rd)).abs() < 1e-9);
+
+    // Idle time widens the deviation, so a player who stops playing slips.
+    sqlx::query(
+        "UPDATE season_ratings SET rated_at = now() - interval '20 days' WHERE user_id = $1",
+    )
+    .bind(ids[0])
+    .execute(&db)
+    .await
+    .unwrap();
+    let s = db::standings(&db, None, 100).await.unwrap();
+    assert!(s.rows.iter().find(|r| r.name == "ann").unwrap().rd > 100.0);
+    // ...and loses first place to bea.
+    assert_eq!(s.rows[0].name, "bea");
+
+    // A past season stops ageing at its end (midnight UTC, 1 February 2020): a row
+    // last rated 12 days before has aged exactly 12 days, however long ago that was.
+    sqlx::query(
+        "INSERT INTO season_ratings (season, user_id, rating, rd, volatility, matches, wins, rated_at)
+         VALUES ('2020-01', $1, 1600, 50, 0.06, $2, 10, '2020-01-20T00:00:00Z')",
+    )
+    .bind(ids[0])
+    .bind(q)
+    .execute(&db)
+    .await
+    .unwrap();
+    let past = db::standings(&db, Some("2020-01"), 100).await.unwrap();
+    assert!(!past.current && past.season == "2020-01");
+    assert_eq!(past.rows.len(), 1);
+    let expected = rating::Glicko {
+        rating: 1600.0,
+        rd: 50.0,
+        volatility: 0.06,
+    }
+    .idle(12.0);
+    assert!(
+        (past.rows[0].rd - expected.rd).abs() < 1e-6,
+        "{:?}",
+        past.rows[0]
+    );
+    assert!(
+        db::standings(&db, Some("2019-12"), 100)
+            .await
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+    let seasons = db::seasons(&db).await.unwrap();
+    assert_eq!(seasons.len(), 2);
+    assert!(db::is_season(&seasons[0]) && seasons[1] == "2020-01");
+
+    // `limit` applies to each list separately.
+    let s = db::standings(&db, None, 1).await.unwrap();
+    let order: Vec<(&str, bool)> = s
+        .rows
+        .iter()
+        .map(|r| (r.name.as_str(), r.qualified))
+        .collect();
+    assert_eq!(order, [("bea", true), ("cal", false)]);
+
+    // The API rejects malformed seasons and serves the standings.
+    let app = app(db, true);
+    let r = call(
+        &app,
+        "GET",
+        "/api/leaderboard?season=2026-13",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = call(&app, "GET", "/api/leaderboard", Value::Null, None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.body["rows"][0]["name"], "bea");
+    assert_eq!(r.body["qualifying_matches"], q);
+}
+
+#[test]
+fn season_keys() {
+    for ok in ["2026-11", "2027-01", "1999-12"] {
+        assert!(db::is_season(ok), "{ok}");
+    }
+    for bad in [
+        "2026-13", "2026-00", "2026-1", "26-11", "2026/11", "2026-11x", "abcd-11",
+    ] {
+        assert!(!db::is_season(bad), "{bad}");
+    }
 }
 
 type Ws =
@@ -663,7 +876,8 @@ async fn two_players_queue_play_a_match_and_get_rated(db: PgPool) {
     assert_eq!(winner_seat as u8, *winner);
     assert_eq!((b0, b1), (1500.0, 1500.0));
     assert!((a0 + a1 - 3000.0).abs() < 1e-9);
-    assert_eq!(if *winner == 0 { a0 } else { a1 }, 1516.0);
+    let won = rating::match_result([rating::Glicko::NEW; 2], [0.0; 2], 0)[0].rating;
+    assert_eq!(if *winner == 0 { a0 } else { a1 }, won);
     let ServerMsg::MatchEnded {
         ratings: Some(r), ..
     } = &results[0].3
@@ -848,9 +1062,10 @@ async fn players_see_only_their_own_histories(db: PgPool) {
     assert_eq!(m["opponent"], "bob");
     assert_eq!(m["status"], "finished");
     let won = m["won"].as_bool().unwrap();
+    let [w, l] = rating::match_result([rating::Glicko::NEW; 2], [0.0; 2], 0);
     assert_eq!(
         m["rating_after"].as_f64().unwrap(),
-        if won { 1516.0 } else { 1484.0 }
+        if won { w.rating } else { l.rating }
     );
     let id = m["id"].as_i64().unwrap();
 
@@ -892,7 +1107,9 @@ async fn players_see_only_their_own_histories(db: PgPool) {
     let r = call(&app, "GET", "/api/matches", Value::Null, None).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     let r = call(&app, "GET", "/api/leaderboard", Value::Null, None).await;
-    assert_eq!(r.body.as_array().unwrap().len(), 2);
+    assert_eq!(r.body["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(m["rated"], true);
+    assert!(db::is_season(m["season"].as_str().unwrap()));
 }
 
 #[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]

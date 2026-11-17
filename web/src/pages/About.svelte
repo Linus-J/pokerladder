@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { link, scrollToHash } from '../lib/router.svelte'
+  import { PAIR_DAILY_LIMIT, QUALIFYING_MATCHES as QUALIFYING } from '../lib/season'
 
   // A direct visit to /about#ratings: the page renders after the session loads, so
   // the browser's own jump to the anchor has already missed it.
@@ -81,24 +82,41 @@
     <section id="ratings">
       <h2>Ratings</h2>
       <p>
-        Everyone starts at <b>1500</b>. When a match finishes, the winner takes points from the loser:
-        16 between two equally rated players, fewer for beating someone rated far below you, and up to
-        32 for beating someone far above. (It is the Elo system with K = 32.) Abandoned matches don't
-        count. You appear on the <a href="/leaderboard" onclick={link}>leaderboard</a> after your first
-        rated match.
+        Ratings use the Glicko-2 system. As well as a number, it keeps track of how sure it is of that
+        number. A new rating starts at <b>1500</b> and very unsure, so your first few matches move it a
+        lot. The more you play, the surer it gets and the smaller the steps become. Beating someone
+        rated above you is worth more than beating someone below you. If you stop playing for a while,
+        it slowly becomes unsure again.
       </p>
       <p>
-        When seasons start, ratings will move to Glicko-2, which also tracks how sure it is of each
-        rating. Ratings from the beta may be reset then.
+        Only finished matches count; abandoned ones don't. And only the first {PAIR_DAILY_LIMIT}
+        matches between the same two players in any 24 hours are rated. Later ones are played as
+        normal but change nothing, and the table says so before the first hand.
+      </p>
+      <p>
+        You have two ratings. Your <b>season rating</b> is the one you see everywhere: it starts again
+        at 1500 every month. A longer-running rating, kept behind the scenes, is only used to find you
+        opponents of the right strength, so a new season doesn't pair beginners with the best players.
+        Beta ratings (from before seasons began) were reset when seasons started; your old matches
+        still show the Elo points they moved.
       </p>
     </section>
 
     <section id="seasons">
       <h2>Seasons and prizes</h2>
       <p>
-        The plan is a season every month, with prizes for the top of the ladder paid for by sponsors.
-        Entry is free: there is no paid entry of any kind, and buying something never improves your
-        chances. Seasons haven't started yet. This page will say when they do.
+        A season is one calendar month, from midnight UTC on the 1st. To be ranked on the
+        <a href="/leaderboard" onclick={link}>leaderboard</a> you need {QUALIFYING} rated matches in
+        that season. Ranked players are ordered by their <b>score</b>: season rating minus twice its
+        uncertainty. That rewards a rating you've shown over many matches rather than one lucky streak,
+        and a player who stops playing slowly slips down. The standings at the end of the month are
+        final, and earlier seasons stay on the leaderboard page.
+      </p>
+      <p>
+        Prizes for the top of a season will be paid for by sponsors, and announced before the season
+        starts. Entry is free: there is no paid entry of any kind, and buying something never improves
+        your chances. Before any prize is paid, the winners' matches are checked for collusion and chip
+        dumping.
       </p>
     </section>
 

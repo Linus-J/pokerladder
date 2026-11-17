@@ -134,6 +134,15 @@ body {
   font: var(--t-base) / 1.6 var(--font);
 }
 
+/* The page is a column at least as tall as the window, so the footer sits at the
+   bottom even when the content is short. */
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
 a {
   color: var(--link);
   text-decoration: underline;

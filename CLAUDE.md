@@ -20,9 +20,12 @@ crates/server   authoritative game server: axum + tokio + sqlx/Postgres (Phase 2
   src/auth.rs        register / verify-email / login / logout / me (argon2id, cookies)
   src/matchmaking.rs rating-window queue; `start_match` spawns the actor
   src/db.rs          Postgres queries; `PgStore` (hands + result/rating transaction)
+  src/rating.rs      Glicko-2 (pure), season constants (20 to qualify, 3 rated per pair per day)
   src/protocol.rs    WebSocket message types; `export_bindings` test writes
                      web/src/lib/protocol.ts (ts-rs)
   migrations/        sqlx migrations (embedded, run at startup)
+deploy/home/     production on the owner's PC: update.sh (deploy main), backup.sh,
+                 reset-ladder.sh (wipe ranks + history, keep accounts), README.md
 web/            Svelte 5 + Vite + TypeScript SPA (Phase 3)
   src/lib/table.ts       pure reducer: server messages -> table state (unit-tested)
   src/lib/game.svelte.ts session + WebSocket (reconnects), app-wide state
@@ -74,6 +77,10 @@ web/            Svelte 5 + Vite + TypeScript SPA (Phase 3)
 
 ## Conventions
 
+- Ratings: players see their **season** rating (`season_ratings`, fresh each UTC
+  month); `users.rating` is a lifetime Glicko-2 rating for matchmaking only. A match
+  counts towards the season it finishes in; past seasons never change. Unrated
+  matches (`matches.rated = false`) never touch either rating.
 - Authoritative server: nothing a client sends is trusted; all rules live in the engine.
 - Errors leave state unchanged; invariants that would stall a match are `assert!`ed
   even in release.

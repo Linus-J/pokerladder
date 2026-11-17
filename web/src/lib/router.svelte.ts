@@ -14,12 +14,22 @@ class Router {
   }
 
   go(to: string, replace = false) {
-    if (to === location.pathname + location.search) return
-    if (replace) history.replaceState(null, '', to)
-    else history.pushState(null, '', to)
-    this.sync()
-    scrollTo(0, 0)
+    const hash = to.includes('#') ? to.slice(to.indexOf('#')) : ''
+    if (to !== location.pathname + location.search + location.hash) {
+      if (replace) history.replaceState(null, '', to)
+      else history.pushState(null, '', to)
+      this.sync()
+    }
+    if (hash) scrollToHash(hash)
+    else scrollTo(0, 0)
   }
+}
+
+/** Scrolls to `#id` once the page has rendered it (pages can render a moment late). */
+export function scrollToHash(hash: string, tries = 20) {
+  const el = document.getElementById(decodeURIComponent(hash.slice(1)))
+  if (el) el.scrollIntoView()
+  else if (tries > 0) setTimeout(() => scrollToHash(hash, tries - 1), 50)
 }
 
 export const router = new Router()
@@ -30,5 +40,5 @@ export function link(e: MouseEvent) {
   const a = e.currentTarget as HTMLAnchorElement
   if (a.origin !== location.origin) return
   e.preventDefault()
-  router.go(a.pathname + a.search)
+  router.go(a.pathname + a.search + a.hash)
 }

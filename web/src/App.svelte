@@ -1,15 +1,19 @@
 <script lang="ts">
+  import { Info, LogOut, RotateCw, ScrollText, Spade, TriangleAlert, Trophy } from '@lucide/svelte'
   import { onMount } from 'svelte'
+  import Icon from './components/Icon.svelte'
   import { game, session } from './lib/game.svelte'
   import { link, router } from './lib/router.svelte'
+  import About from './pages/About.svelte'
   import ForgotPassword from './pages/ForgotPassword.svelte'
   import History from './pages/History.svelte'
-  import ResetPassword from './pages/ResetPassword.svelte'
+  import Leaderboard from './pages/Leaderboard.svelte'
   import Lobby from './pages/Lobby.svelte'
   import Login from './pages/Login.svelte'
   import Play from './pages/Play.svelte'
   import Privacy from './pages/Privacy.svelte'
   import Register from './pages/Register.svelte'
+  import ResetPassword from './pages/ResetPassword.svelte'
   import VerifyEmail from './pages/VerifyEmail.svelte'
 
   let loadError = $state(false)
@@ -32,48 +36,108 @@
     if ((path === '/login' || path === '/register') && session.me) router.go('/', true)
   })
 
+  const TITLES: Record<string, string> = {
+    '/login': 'Log in',
+    '/register': 'Create an account',
+    '/about': 'About',
+    '/leaderboard': 'Leaderboard',
+    '/privacy': 'Privacy',
+    '/play': 'Table',
+    '/forgot-password': 'Reset your password',
+    '/reset-password': 'Choose a new password',
+    '/verify-email': 'Confirm your email',
+  }
+  $effect(() => {
+    const t = path.startsWith('/history') ? 'Your matches' : TITLES[path]
+    document.title = t ? `${t} | Pokerladder` : "Pokerladder | Heads-up hold'em ladder"
+  })
+
+  const inMatch = $derived(game.table !== null && game.table.winner === null)
+  const here = (p: string) => (path === p || path.startsWith(p + '/') ? 'page' : undefined)
+
   async function logout() {
     await session.logout()
     router.go('/')
   }
 </script>
 
-<header class="top">
-  <a class="brand" href="/" onclick={link}><span class="suit">♠</span> Pokerladder</a>
-  <nav>
-    {#if session.me}
-      {#if game.table && game.table.winner === null}
-        <a href="/play" onclick={link} class="live">● Live match</a>
+<header class="masthead">
+  <div class="wrap bar">
+    <a class="brand" href="/" onclick={link}>
+      <Icon of={Spade} />
+      <span>Pokerladder</span>
+    </a>
+    <nav aria-label="Main">
+      <a href="/" onclick={link} aria-current={path === '/' ? 'page' : undefined}>Lobby</a>
+      <a href="/leaderboard" onclick={link} aria-current={here('/leaderboard')}>
+        <Icon of={Trophy} />Leaderboard
+      </a>
+      {#if session.me}
+        <a href="/history" onclick={link} aria-current={here('/history')}><Icon of={ScrollText} />Your matches</a>
       {/if}
-      <a href="/history" onclick={link}>History</a>
-      <span class="me">{session.me.name} <span class="num">{Math.round(session.me.rating)}</span></span>
-      <button type="button" class="link" onclick={logout}>Log out</button>
-    {:else if session.loaded}
-      <a href="/login" onclick={link}>Log in</a>
-      <a href="/register" onclick={link}>Sign up</a>
-    {/if}
-  </nav>
+      <a href="/about" onclick={link} aria-current={here('/about')}><Icon of={Info} />About</a>
+    </nav>
+  </div>
+  <div class="userbar">
+    <div class="wrap userbar-inner">
+      {#if session.me}
+        <span>
+          Logged in as <b>{session.me.name}</b>, rating <b class="num">{Math.round(session.me.rating)}</b>
+        </span>
+        {#if inMatch}
+          <a class="live" href="/play" onclick={link}>You're in a match: back to the table</a>
+        {/if}
+        <button type="button" class="link logout" onclick={logout}><Icon of={LogOut} />Log out</button>
+      {:else if session.loaded}
+        <span class="muted">You're not logged in.</span>
+        <span class="auth-links">
+          <a href="/login" onclick={link}>Log in</a>
+          <span class="muted">or</span>
+          <a href="/register" onclick={link}>create an account</a>
+        </span>
+      {/if}
+    </div>
+  </div>
 </header>
 
 {#if game.status === 'replaced'}
   <div class="banner">
-    You opened Pokerladder in another tab or device.
-    <button type="button" class="link" onclick={() => game.reclaim()}>Use this one instead</button>
+    <div class="wrap">
+      <Icon of={TriangleAlert} />
+      <span>
+        Pokerladder is open in another tab or on another device, so this one has stopped updating.
+        <button type="button" class="link" onclick={() => game.reclaim()}>Play here instead</button>
+      </span>
+    </div>
   </div>
 {:else if session.me && game.status === 'connecting'}
-  <div class="banner subtle">Reconnecting…</div>
+  <div class="banner quiet">
+    <div class="wrap">
+      <Icon of={RotateCw} spin />
+      {game.everOnline ? 'Lost the connection to the game server. Reconnecting...' : 'Connecting to the game server...'}
+    </div>
+  </div>
 {:else if game.restarting}
   <div class="banner" data-testid="restarting">
-    The server is restarting for an update. Matches in progress will finish as normal; new matches start again in a few minutes.
+    <div class="wrap">
+      <Icon of={RotateCw} />
+      <span>
+        The server is restarting for an update. Matches already running will finish as normal. New
+        matches can start again in a few minutes.
+      </span>
+    </div>
   </div>
 {/if}
 {#if game.notice}<div class="toast" role="status">{game.notice}</div>{/if}
 
-<main>
+<main class="wrap">
   {#if loadError}
-    <p class="error center">Can't reach the server. Reload to try again.</p>
+    <div class="alert" role="alert">
+      <Icon of={TriangleAlert} />
+      <span>Pokerladder can't reach its server right now. Check your connection, then reload the page.</span>
+    </div>
   {:else if !session.loaded}
-    <p class="muted center">Loading…</p>
+    <p class="muted loading">Loading Pokerladder...</p>
   {:else if path === '/login'}
     <Login />
   {:else if path === '/register'}
@@ -86,6 +150,10 @@
     <ResetPassword />
   {:else if path === '/privacy'}
     <Privacy />
+  {:else if path === '/about'}
+    <About />
+  {:else if path === '/leaderboard'}
+    <Leaderboard />
   {:else if path === '/play' && session.me}
     <Play />
   {:else if path.startsWith('/history') && session.me}
@@ -96,107 +164,175 @@
 </main>
 
 <footer>
-  <a href="/privacy" onclick={link}>Privacy</a>
-  <span class="muted">Free to enter · sponsor-funded prizes</span>
+  <div class="wrap foot">
+    <span>Pokerladder. Heads-up No-Limit Hold'em, free to enter, prizes paid by sponsors.</span>
+    <span class="foot-links">
+      <a href="/about" onclick={link}>About</a>
+      <a href="/about#fair-play" onclick={link}>Fair play</a>
+      <a href="/privacy" onclick={link}>Privacy</a>
+    </span>
+  </div>
 </footer>
 
 <style>
-  .top {
+  :global(.wrap) {
+    max-width: 72rem;
+    margin: 0 auto;
+    padding-left: var(--s5);
+    padding-right: var(--s5);
+  }
+  .masthead {
+    background: var(--bar);
+    color: var(--bar-ink);
+  }
+  .bar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 0.8rem 1.5rem;
-    border-bottom: 1px solid var(--line);
-    background: rgba(15, 20, 18, 0.9);
-    position: sticky;
-    top: 0;
-    z-index: 5;
-    backdrop-filter: blur(6px);
+    gap: var(--s5);
+    min-height: 3.25rem;
   }
   .brand {
-    font-weight: 800;
-    font-size: 1.15rem;
-    color: var(--text);
-    letter-spacing: -0.01em;
-  }
-  .brand:hover {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s2);
+    font-family: var(--serif);
+    font-size: var(--t-xl);
+    font-weight: 700;
+    color: var(--bar-ink);
     text-decoration: none;
   }
-  .suit {
-    color: var(--accent);
+  .brand:hover {
+    color: var(--bar-ink);
   }
   nav {
     display: flex;
-    gap: 1.2rem;
-    align-items: center;
-    font-size: 0.92rem;
+    flex-wrap: wrap;
+    margin-left: auto;
+    align-self: stretch;
   }
   nav a {
-    color: var(--text);
-  }
-  .me {
-    color: var(--muted);
-  }
-  .me .num {
-    color: var(--accent);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s2);
+    padding: 0 var(--s3);
+    color: var(--bar-muted);
+    text-decoration: none;
     font-weight: 700;
+    border-bottom: 3px solid transparent;
+  }
+  nav a:hover {
+    color: var(--bar-ink);
+    border-bottom-color: var(--bar-muted);
+  }
+  nav a[aria-current='page'] {
+    color: var(--bar-ink);
+    border-bottom-color: var(--bar-ink);
+  }
+  .userbar {
+    background: var(--sunk);
+    color: var(--ink);
+    border-bottom: 1px solid var(--line);
+    font-size: var(--t-sm);
+  }
+  .userbar-inner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s2) var(--s5);
+    min-height: 2.25rem;
   }
   .live {
-    color: var(--good) !important;
     font-weight: 700;
   }
+  .logout,
+  .auth-links {
+    margin-left: auto;
+  }
+  .logout {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s1);
+  }
   main {
-    max-width: 82rem;
-    margin: 0 auto;
-    padding: 1.25rem 1.5rem 3rem;
+    padding-top: var(--s5);
+    padding-bottom: var(--s7);
+    min-height: 60vh;
   }
   .banner {
-    text-align: center;
-    padding: 0.55rem 1rem;
-    background: rgba(227, 179, 65, 0.15);
-    border-bottom: 1px solid rgba(227, 179, 65, 0.35);
+    background: var(--note-bg);
+    border-bottom: 1px solid var(--note-line);
+    font-size: var(--t-sm);
   }
-  .banner.subtle {
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--muted);
+  .banner .wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+    padding-top: var(--s2);
+    padding-bottom: var(--s2);
+  }
+  .banner.quiet {
+    background: var(--sunk);
     border-color: var(--line);
+    color: var(--muted);
   }
   .toast {
     position: fixed;
-    bottom: 1.5rem;
-    left: 50%;
-    transform: translateX(-50%);
-    background: #2b1c1c;
-    border: 1px solid #6b3535;
-    padding: 0.6rem 1.1rem;
-    border-radius: 8px;
+    bottom: var(--s5);
+    left: var(--s5);
+    max-width: 26rem;
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-left: 4px solid var(--brand);
+    padding: var(--s3) var(--s4);
+    border-radius: var(--radius);
     z-index: 20;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
   }
-  .center {
-    text-align: center;
-    margin-top: 4rem;
+  .loading {
+    padding: var(--s6) 0;
   }
   footer {
-    display: flex;
-    gap: 1.5rem;
-    justify-content: center;
-    padding: 1.5rem;
-    font-size: 0.8rem;
     border-top: 1px solid var(--line);
+    background: var(--sunk);
+    font-size: var(--t-sm);
+    color: var(--muted);
   }
-  @media (max-width: 640px) {
-    .top {
-      padding: 0.7rem 1rem;
+  .foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s2) var(--s5);
+    padding-top: var(--s4);
+    padding-bottom: var(--s4);
+  }
+  .foot-links {
+    display: flex;
+    gap: var(--s4);
+    margin-left: auto;
+  }
+  @media (max-width: 720px) {
+    :global(.wrap) {
+      padding-left: var(--s4);
+      padding-right: var(--s4);
+    }
+    .bar {
+      flex-wrap: wrap;
+      gap: 0;
+      padding-top: var(--s2);
     }
     nav {
-      gap: 0.8rem;
+      margin-left: 0;
+      width: 100%;
     }
-    .me {
+    nav a {
+      padding: var(--s2) var(--s4) var(--s2) 0;
+    }
+    /* Text alone fits on one line at phone width. */
+    nav a :global(svg) {
       display: none;
     }
-    main {
-      padding: 1rem 0.75rem 2rem;
+    .logout,
+    .auth-links,
+    .foot-links {
+      margin-left: 0;
     }
   }
 </style>

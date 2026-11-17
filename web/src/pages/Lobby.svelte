@@ -1,28 +1,56 @@
 <script lang="ts">
+  import { LoaderCircle, MailCheck, RotateCw, ScrollText, Swords, Trophy, UserPlus } from '@lucide/svelte'
   import { onMount } from 'svelte'
+  import Icon from '../components/Icon.svelte'
+  import LeaderboardTable from '../components/LeaderboardTable.svelte'
   import { api } from '../lib/api'
   import { game, session } from '../lib/game.svelte'
-  import type { LeaderboardRow } from '../lib/protocol'
+  import type { LeaderboardRow, MatchSummary } from '../lib/protocol'
   import { link, router } from '../lib/router.svelte'
 
   let board = $state<LeaderboardRow[] | null>(null)
-  let boardError = $state(false)
+  let boardFailed = $state(false)
+  let recent = $state<MatchSummary[] | null>(null)
+  let recentFailed = $state(false)
   let resent = $state<'idle' | 'sending' | 'sent' | 'error'>('idle')
   let now = $state(Date.now())
+
+  const me = $derived(session.me)
 
   onMount(() => {
     api.leaderboard().then(
       (b) => (board = b),
-      () => (boardError = true),
+      () => (boardFailed = true),
     )
     const id = setInterval(() => (now = Date.now()), 1000)
     return () => clearInterval(id)
   })
 
+  // Recent matches, for whoever is logged in, refreshed when a match ends. Deriveds
+  // only change when their value does, so table updates mid-hand don't refetch.
+  const myId = $derived(session.me?.id ?? null)
+  const winner = $derived(game.table?.winner ?? null)
+  let fetchId = 0
+  $effect(() => {
+    void winner
+    if (myId === null) return
+    const id = ++fetchId
+    api.matches().then(
+      (m) => {
+        if (id !== fetchId) return
+        recent = m.slice(0, 5)
+        recentFailed = false
+      },
+      () => {
+        if (id === fetchId) recentFailed = true
+      },
+    )
+  })
+
   const waited = $derived(Math.max(0, Math.floor((now - game.queuedAt) / 1000)))
-  const me = $derived(session.me)
   const inMatch = $derived(game.table !== null && game.table.winner === null)
   const mustVerify = $derived(!!me && me.verification_required && !me.email_verified)
+  const myRow = $derived(board?.find((r) => r.name === me?.name))
 
   async function resend() {
     resent = 'sending'
@@ -33,185 +61,230 @@
       resent = 'error'
     }
   }
+
+  function when(iso: string) {
+    return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+  }
 </script>
 
-<div class="grid">
-  <section class="hero panel">
+<div class="index">
+  <div class="main">
     {#if !me}
-      <h1>Heads-up hold'em, ranked.</h1>
-      <p class="lead">
-        Play one-on-one No-Limit Hold'em sit-and-gos against opponents near your rating. Climb the
-        monthly ladder — <b>free to enter</b>, with sponsor-funded prizes.
-      </p>
-      <div class="row">
-        <a class="btn primary" href="/register" onclick={link}>Create account</a>
-        <a class="btn" href="/login" onclick={link}>Log in</a>
-      </div>
-    {:else}
-      <h1>Welcome back, {me.name}</h1>
-      <p class="muted">
-        Rating <b class="num rating">{Math.round(me.rating)}</b> · 1,500 chips each, blinds rise every
-        10 hands, 15 s per decision plus a time bank.
-      </p>
-
-      {#if mustVerify}
-        <div class="notice">
-          Confirm your email address to start playing — check your inbox for the link.
-          {#if resent === 'sent'}
-            <span class="good">Sent a new link.</span>
-          {:else}
-            <button type="button" class="link" disabled={resent === 'sending'} onclick={resend}>
-              Send it again
-            </button>
-            {#if resent === 'error'}<span class="error">Couldn't send; try again shortly.</span>{/if}
-          {/if}
-        </div>
-      {/if}
-
-      <div class="queue" data-testid="queue">
-        {#if inMatch}
-          <button type="button" class="primary big" onclick={() => router.go('/play')}>
-            Return to your match
-          </button>
-        {:else if game.queued}
-          <div class="searching">
-            <span class="spinner" aria-hidden="true"></span>
-            <span>Finding an opponent… <span class="muted num">{waited}s</span></span>
+      <section class="block intro">
+        <div class="block-body">
+          <h1>Heads-up hold'em, ranked.</h1>
+          <p class="lead">
+            Play one-on-one No-Limit Hold'em against someone near your rating. Every match moves your
+            rating up or down, and the best players top the ladder. It's free to play, and it stays free.
+          </p>
+          <div class="actions">
+            <a class="button primary big" href="/register" onclick={link}><Icon of={UserPlus} />Create a free account</a>
+            <span class="muted">Already have one? <a href="/login" onclick={link}>Log in</a></span>
           </div>
-          <button type="button" onclick={() => game.leaveQueue()}>Cancel</button>
-        {:else}
-          <button
-            type="button"
-            class="primary big"
-            disabled={game.status !== 'online' || mustVerify || game.restarting}
-            onclick={() => game.joinQueue()}
-          >
-            Find a match
-          </button>
-          {#if game.status !== 'online'}<span class="muted">Connecting…</span>{/if}
-        {/if}
-      </div>
-    {/if}
-  </section>
-
-  <section class="panel">
-    <h2>Leaderboard</h2>
-    {#if boardError}
-      <p class="muted">Couldn't load the leaderboard.</p>
-    {:else if !board}
-      <p class="muted">Loading…</p>
-    {:else if board.length === 0}
-      <p class="muted">No rated matches yet — be the first.</p>
+        </div>
+      </section>
     {:else}
-      <table class="list" data-testid="leaderboard">
-        <thead><tr><th>#</th><th>Player</th><th class="r">Rating</th><th class="r">Matches</th></tr></thead>
-        <tbody>
-          {#each board as row, i (row.name)}
-            <tr class:mine={row.name === me?.name}>
-              <td class="num muted">{i + 1}</td>
-              <td>{row.name}</td>
-              <td class="r num">{Math.round(row.rating)}</td>
-              <td class="r num muted">{row.rated_matches}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+      <section class="block">
+        <header><Icon of={Swords} /><h2>Play</h2></header>
+        <div class="block-body">
+          <h1>Welcome back, {me.name}</h1>
+          <p class="muted">
+            Your rating is <b class="num">{Math.round(me.rating)}</b>{#if myRow}, from {myRow.rated_matches}
+              rated {myRow.rated_matches === 1 ? 'match' : 'matches'}{/if}.
+          </p>
+
+          {#if mustVerify}
+            <div class="note">
+              <Icon of={MailCheck} />
+              <div>
+                Confirm your email address before your first match. The link is in your inbox (check spam
+                if it isn't there).
+                {#if resent === 'sent'}
+                  <b>We've sent a new link.</b>
+                {:else}
+                  <button type="button" class="link" disabled={resent === 'sending'} onclick={resend}>
+                    {resent === 'sending' ? 'Sending...' : 'Send the link again'}
+                  </button>
+                  {#if resent === 'error'}<span class="bad">That didn't send. Try again in a minute.</span>{/if}
+                {/if}
+              </div>
+            </div>
+          {/if}
+
+          <div class="queue" data-testid="queue">
+            {#if inMatch}
+              <button type="button" class="primary big" onclick={() => router.go('/play')}>
+                Back to your match
+              </button>
+            {:else if game.queued}
+              <span class="searching">
+                <Icon of={LoaderCircle} spin />
+                Looking for an opponent near your rating... <span class="muted num">{waited}s</span>
+              </span>
+              <button type="button" onclick={() => game.leaveQueue()}>Stop looking</button>
+            {:else}
+              <button
+                type="button"
+                class="primary big"
+                disabled={game.status !== 'online' || mustVerify || game.restarting}
+                onclick={() => game.joinQueue()}
+              >
+                Find a match
+              </button>
+              {#if game.restarting}
+                <span class="muted"><Icon of={RotateCw} /> New matches are paused while the server restarts.</span>
+              {:else if game.status !== 'online'}
+                <span class="muted">Connecting to the game server...</span>
+              {:else if !mustVerify}
+                <span class="muted small">You'll be paired with the closest-rated player who is waiting.</span>
+              {/if}
+            {/if}
+          </div>
+        </div>
+      </section>
+
+      <section class="block">
+        <header>
+          <Icon of={ScrollText} /><h2>Your recent matches</h2>
+          {#if recent && recent.length > 0}<a class="aside" href="/history" onclick={link}>All your matches</a>{/if}
+        </header>
+        {#if recentFailed}
+          <p class="block-body">Your matches didn't load. Reload the page to try again.</p>
+        {:else if !recent}
+          <div class="block-body"><span class="skeleton" style:width="60%"></span></div>
+        {:else if recent.length === 0}
+          <p class="block-body muted">
+            Nothing here yet. After your first match you'll see the result, the rating change and every hand
+            you played.
+          </p>
+        {:else}
+          <table class="list">
+            <tbody>
+              {#each recent as m (m.id)}
+                {@const d = m.rating_after !== null && m.rating_before !== null ? m.rating_after - m.rating_before : null}
+                <tr>
+                  <td class="date muted">{when(m.started_at)}</td>
+                  <td><a href="/history/{m.id}" onclick={link}>vs {m.opponent}</a></td>
+                  <td>
+                    {#if m.status === 'in_progress'}<span class="muted">In progress</span>
+                    {:else if m.status === 'abandoned'}<span class="muted">Abandoned</span>
+                    {:else if m.won}<span class="good">Won</span>
+                    {:else}<span class="bad">Lost</span>{/if}
+                  </td>
+                  <td class="r num">
+                    {#if d !== null}<span class={d >= 0 ? 'good' : 'bad'}>{d >= 0 ? '+' : ''}{d.toFixed(1)}</span>{/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      </section>
     {/if}
-  </section>
+
+    <section class="block">
+      <header><h2>How a match works</h2><a class="aside" href="/about" onclick={link}>Full rules</a></header>
+      <dl class="block-body facts">
+        <dt>Format</dt>
+        <dd>One opponent, No-Limit Hold'em, played until one of you has all the chips.</dd>
+        <dt>Chips</dt>
+        <dd>1,500 each. Blinds start at 10/20 and rise every 10 hands.</dd>
+        <dt>Clock</dt>
+        <dd>15 seconds a decision, plus a 60 second time bank that tops up as you play.</dd>
+        <dt>Opponents</dt>
+        <dd>Chosen by the server from players near your rating. You can't pick.</dd>
+        <dt>Rating</dt>
+        <dd>Everyone starts at 1500. Win and you take points from your opponent.</dd>
+        <dt>Cost</dt>
+        <dd>Nothing. Seasons with sponsor-funded prizes are on the way.</dd>
+      </dl>
+    </section>
+  </div>
+
+  <aside class="side">
+    <section class="block">
+      <header>
+        <Icon of={Trophy} /><h2>Leaderboard</h2>
+        <a class="aside" href="/leaderboard" onclick={link}>Top 100</a>
+      </header>
+      <LeaderboardTable rows={board} failed={boardFailed} limit={10} me={me?.name} />
+    </section>
+  </aside>
 </div>
 
 <style>
-  .grid {
+  .index {
     display: grid;
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-    gap: 1rem;
+    grid-template-columns: minmax(0, 1fr) 20rem;
+    gap: var(--s5);
     align-items: start;
   }
-  .hero {
-    padding: 2rem;
-    background:
-      radial-gradient(ellipse at 100% 0%, rgba(19, 87, 58, 0.55), transparent 60%),
-      var(--panel);
+  .main,
+  .side {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s5);
+  }
+  .intro .block-body {
+    padding: var(--s6);
   }
   .lead {
-    font-size: 1.1rem;
-    color: #cfd9d2;
-    max-width: 34rem;
+    font-size: var(--t-md);
   }
-  .row {
+  .actions {
     display: flex;
-    gap: 0.75rem;
-    margin-top: 1.5rem;
-  }
-  .btn {
-    display: inline-block;
-    border: 1px solid var(--line);
-    background: var(--panel-2);
-    border-radius: 8px;
-    padding: 0.6em 1.3em;
-    font-weight: 600;
-    color: var(--text);
-  }
-  .btn.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--accent-ink);
-  }
-  .btn:hover {
-    text-decoration: none;
-    filter: brightness(1.08);
-  }
-  .rating {
-    color: var(--accent);
-  }
-  .notice {
-    margin: 1rem 0;
-    padding: 0.75rem 1rem;
-    border-radius: 8px;
-    border: 1px solid rgba(227, 179, 65, 0.4);
-    background: rgba(227, 179, 65, 0.08);
-  }
-  .notice button {
-    margin-left: 0.4rem;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s4);
+    margin-top: var(--s5);
   }
   .queue {
     display: flex;
-    gap: 1rem;
+    flex-wrap: wrap;
+    gap: var(--s3) var(--s4);
     align-items: center;
-    margin-top: 1.5rem;
-    min-height: 3.2rem;
-  }
-  .big {
-    font-size: 1.1rem;
-    padding: 0.75em 1.8em;
+    margin-top: var(--s5);
+    min-height: 2.75rem;
   }
   .searching {
-    display: flex;
-    gap: 0.6rem;
+    display: inline-flex;
     align-items: center;
+    gap: var(--s2);
   }
-  .spinner {
-    width: 1.1rem;
-    height: 1.1rem;
-    border-radius: 50%;
-    border: 2px solid var(--line);
-    border-top-color: var(--accent);
-    animation: spin 0.9s linear infinite;
+  .note button {
+    margin-left: var(--s1);
   }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
+  .date {
+    width: 5.5rem;
+    white-space: nowrap;
   }
-  tr.mine td {
-    color: var(--accent);
+  .facts {
+    display: grid;
+    grid-template-columns: 7rem minmax(0, 1fr);
+    gap: var(--s2) var(--s4);
+    margin: 0;
   }
-  @media (max-width: 800px) {
-    .grid {
+  .facts dt {
+    font-weight: 700;
+  }
+  .facts dd {
+    margin: 0;
+  }
+  @media (max-width: 860px) {
+    .index {
       grid-template-columns: 1fr;
     }
-    .hero {
-      padding: 1.25rem;
+    .intro .block-body {
+      padding: var(--s5) var(--s4);
+    }
+  }
+  @media (max-width: 480px) {
+    .facts {
+      grid-template-columns: 1fr;
+      gap: 0;
+    }
+    .facts dd {
+      margin-bottom: var(--s2);
     }
   }
 </style>

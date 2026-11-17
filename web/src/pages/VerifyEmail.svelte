@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { Check, LoaderCircle, TriangleAlert } from '@lucide/svelte'
   import { onMount } from 'svelte'
+  import Icon from '../components/Icon.svelte'
   import { ApiError, api } from '../lib/api'
   import { session } from '../lib/game.svelte'
   import { link, router } from '../lib/router.svelte'
@@ -17,33 +19,32 @@
       if (session.me) session.me = { ...session.me, email_verified: true }
     } catch (e) {
       status = 'bad'
-      message = e instanceof ApiError ? e.message : 'Something went wrong.'
+      message = e instanceof ApiError ? e.message : "We couldn't check that link just now."
     }
   })
 </script>
 
-<div class="box panel">
-  {#if status === 'working'}
-    <p>Confirming your email…</p>
-  {:else if status === 'ok'}
-    <h1>Email confirmed</h1>
-    <p>You're ready to play.</p>
-    {#if session.me}
-      <a href="/" onclick={link}>Go to the lobby</a>
+<div class="auth-page">
+  <section class="block">
+    {#if status === 'working'}
+      <header><Icon of={LoaderCircle} spin /><h1 class="h">Confirming your email...</h1></header>
+      <div class="block-body"><span class="skeleton" style:width="70%"></span></div>
+    {:else if status === 'ok'}
+      <header><Icon of={Check} /><h1 class="h">Email confirmed</h1></header>
+      <div class="block-body">
+        <p>That's everything. You can play rated matches now.</p>
+        {#if session.me}
+          <p><a class="button primary" href="/" onclick={link}>Go to the lobby</a></p>
+        {:else}
+          <p><a class="button primary" href="/login" onclick={link}>Log in to play</a></p>
+        {/if}
+      </div>
     {:else}
-      <a href="/login" onclick={link}>Log in</a>
+      <header><Icon of={TriangleAlert} /><h1 class="h">That link didn't work</h1></header>
+      <div class="block-body">
+        <p class="bad">{message}</p>
+        <p>Links last 48 hours and only work once. Log in and use "Send the link again" in the lobby to get a fresh one.</p>
+      </div>
     {/if}
-  {:else}
-    <h1>That link didn't work</h1>
-    <p class="error">{message}</p>
-    <p class="muted">Log in and use "Send it again" in the lobby to get a new one.</p>
-  {/if}
+  </section>
 </div>
-
-<style>
-  .box {
-    max-width: 26rem;
-    margin: 3rem auto;
-    text-align: center;
-  }
-</style>

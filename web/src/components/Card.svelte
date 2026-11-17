@@ -21,16 +21,16 @@
     --w: 3.4rem;
     width: var(--w);
     height: calc(var(--w) * 1.4);
-    border-radius: calc(var(--w) * 0.11);
+    border-radius: calc(var(--w) * 0.09);
     background: var(--card);
-    box-shadow:
-      0 1px 0 rgba(255, 255, 255, 0.6) inset,
-      0 3px 8px rgba(0, 0, 0, 0.45);
+    border: 1px solid rgba(0, 0, 0, 0.25);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
     display: flex;
     flex-direction: column;
     justify-content: space-between;
     padding: calc(var(--w) * 0.08) calc(var(--w) * 0.12);
-    font-weight: 800;
+    font-family: var(--serif);
+    font-weight: 700;
     user-select: none;
     flex: none;
   }
@@ -43,7 +43,6 @@
   .rank {
     font-size: calc(var(--w) * 0.42);
     line-height: 1;
-    letter-spacing: -0.04em;
   }
   .pip {
     font-size: calc(var(--w) * 0.5);
@@ -62,10 +61,13 @@
   .suit-c {
     color: var(--club);
   }
+  /* A plain two-tone lattice, like a printed card back. */
   .back {
-    background:
-      repeating-linear-gradient(45deg, #8a1c22 0 6px, #a3262d 6px 12px);
-    border: calc(var(--w) * 0.06) solid #f3eee2;
+    background-color: var(--card-back);
+    background-image:
+      repeating-linear-gradient(45deg, var(--card-back-line) 0 2px, transparent 2px 9px),
+      repeating-linear-gradient(-45deg, var(--card-back-line) 0 2px, transparent 2px 9px);
+    border: calc(var(--w) * 0.07) solid var(--card);
   }
   .dim {
     opacity: 0.45;

@@ -51,6 +51,7 @@ tunnel).
 | Backup now | `systemctl --user start pokerladder-backup` |
 | psql | `docker exec -it pokerladder-prod-db-1 psql -U pokerladder` |
 | Wipe ranks and history (keeps accounts) | `deploy/home/reset-ladder.sh` (backs up first; refuses mid-match) |
+| Chip-dumping report (read-only) | `deploy/home/integrity-report.sh [--season 2026-11] [--all]` |
 
 Backups go to `~/backups/pokerladder` (newest 14). Copy them off this machine too,
 e.g. with `rclone` to cloud storage; a backup on the same disk doesn't survive the

@@ -198,5 +198,38 @@ fn bench_enumerate(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_random, bench_showdown, bench_enumerate);
+/// The exact equity helpers used by the integrity report (one call per decision).
+fn bench_equity(c: &mut Criterion) {
+    use pokerladder_engine::eval::equity;
+    twoplustwo::global();
+    let p = |s: &str| -> Vec<Card> { pokerladder_engine::card::parse_cards(s).unwrap() };
+    let hole: [Card; 2] = p("AhQh").try_into().unwrap();
+    let villain: [Card; 2] = p("7c7d").try_into().unwrap();
+
+    let mut g = c.benchmark_group("equity");
+    g.sample_size(20);
+    for (name, board) in [
+        ("preflop", ""),
+        ("flop", "2c7hTd"),
+        ("turn", "2c7hTd9s"),
+        ("river", "2c7hTd9s3h"),
+    ] {
+        let board = p(board);
+        g.bench_function(format!("vs_hand_{name}"), |b| {
+            b.iter(|| equity::vs_hand(black_box(hole), villain, black_box(&board)))
+        });
+        g.bench_function(format!("vs_random_{name}"), |b| {
+            b.iter(|| equity::vs_random(black_box(hole), black_box(&board)))
+        });
+    }
+    g.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_random,
+    bench_showdown,
+    bench_enumerate,
+    bench_equity
+);
 criterion_main!(benches);

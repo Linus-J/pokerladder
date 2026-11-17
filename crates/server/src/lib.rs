@@ -7,6 +7,7 @@ pub mod config;
 pub mod db;
 pub mod history;
 pub mod hub;
+pub mod integrity;
 pub mod mail;
 pub mod matchmaking;
 pub mod protocol;

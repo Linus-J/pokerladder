@@ -144,7 +144,7 @@ export function applyEvent(t: TableState, e: WireEvent): TableState {
       stacks: e.stacks,
       timeBanksMs: e.time_banks_ms,
       turn: null,
-      log: line(t, `— Hand #${e.number} · blinds ${e.small_blind}/${e.big_blind} —`),
+      log: line(t, `Hand #${e.number} · blinds ${e.small_blind}/${e.big_blind}`),
     }
   }
   if (e.type === 'match_over') {

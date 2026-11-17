@@ -57,22 +57,26 @@
 </script>
 
 {#if !t}
-  <div class="empty panel">
-    <p>You're not in a match.</p>
-    <a href="/" onclick={link}>Back to the lobby</a>
-  </div>
+  <section class="block not-seated">
+    <header><h1 class="h">You're not at a table</h1></header>
+    <div class="block-body">
+      <p>Matches start from the lobby. Once you're paired with an opponent, this page shows the table.</p>
+      <p><a href="/" onclick={link}>Go to the lobby</a></p>
+    </div>
+  </section>
 {:else}
   {@const opp = 1 - t.mySeat}
   {@const h = t.hand}
   <div class="layout">
     <section class="main">
-      <header class="info">
+      <div class="info">
+        <span class="vs"><b>{t.names[t.mySeat]}</b> vs <b>{t.names[opp]}</b></span>
         {#if h}
-          <span>Hand <b class="num">#{h.number}</b></span>
+          <span>Hand <b class="num">{h.number}</b></span>
           <span>Level <b class="num">{h.level}</b></span>
           <span>Blinds <b class="num">{h.smallBlind}/{h.bigBlind}</b></span>
         {:else}
-          <span>Match #{t.matchId} — starting…</span>
+          <span class="muted">Shuffling up for the first hand...</span>
         {/if}
         <label class="muck">
           <input
@@ -83,9 +87,9 @@
               if (!game.setAutoMuck(box.checked)) box.checked = !box.checked
             }}
           />
-          Muck losing hands
+          Don't show my losing hands
         </label>
-      </header>
+      </div>
 
       <div class="felt" data-testid="table">
         <div class="slot top">
@@ -103,7 +107,7 @@
               {/if}
             {/each}
           </div>
-          <div class="pot num" data-testid="pot">
+          <div class="pot num" class:empty={!h || pot(h) === 0} data-testid="pot">
             {#if h && pot(h) > 0}Pot {pot(h).toLocaleString()}{:else}&nbsp;{/if}
           </div>
         </div>
@@ -114,15 +118,20 @@
         </div>
       </div>
 
-      <div class="actions panel">
+      <div class="block actions">
         <ActionBar table={t} />
       </div>
     </section>
 
-    <aside class="log panel" bind:this={logEl} aria-label="Hand log" aria-live="polite">
-      {#each t.log as l, i (i)}
-        <div class:sep={l.startsWith('—')}>{l}</div>
-      {/each}
+    <aside class="block log-block" aria-labelledby="log-title">
+      <header><h2 id="log-title">Hand log</h2></header>
+      <div class="log" bind:this={logEl} aria-live="polite">
+        {#each t.log as l, i (i)}
+          <div class:sep={l.startsWith('Hand #')}>{l}</div>
+        {:else}
+          <p class="none">Every bet, card and result will be written here as the hands are played.</p>
+        {/each}
+      </div>
     </aside>
   </div>
 
@@ -130,23 +139,29 @@
     {@const won = t.winner === t.mySeat}
     {@const r = t.result?.[t.mySeat]}
     <div class="overlay" role="dialog" aria-modal="true" aria-labelledby="result-title">
-      <div class="result panel" data-testid="result">
-        <h1 id="result-title" class={won ? 'good' : 'error'}>{won ? 'You won!' : 'You lost'}</h1>
-        <p class="muted">
-          {t.names[t.winner]} took all the chips after {t.handsPlayed} {t.handsPlayed === 1 ? 'hand' : 'hands'}.
-        </p>
-        {#if r}
-          {@const delta = r.after - r.before}
-          <p class="rating num">
-            Rating {Math.round(r.before)} → <b>{Math.round(r.after)}</b>
-            <span class={delta >= 0 ? 'good' : 'error'}>({delta >= 0 ? '+' : ''}{delta.toFixed(1)})</span>
+      <div class="block result" data-testid="result">
+        <header><h1 id="result-title" class="h">{won ? 'You won the match' : 'You lost the match'}</h1></header>
+        <div class="block-body">
+          <p>
+            {t.names[t.winner]} took all the chips after {t.handsPlayed}
+            {t.handsPlayed === 1 ? 'hand' : 'hands'}.
           </p>
-        {:else}
-          <p class="muted">Recording the result…</p>
-        {/if}
-        <div class="row">
-          <button type="button" onclick={lobby}>Lobby</button>
-          <button type="button" class="primary" disabled={game.restarting} onclick={playAgain}>Play again</button>
+          {#if r}
+            {@const delta = r.after - r.before}
+            <p class="rating num">
+              Rating {Math.round(r.before)} → <b>{Math.round(r.after)}</b>
+              <span class={delta >= 0 ? 'good' : 'bad'}>({delta >= 0 ? '+' : ''}{delta.toFixed(1)})</span>
+            </p>
+          {:else}
+            <p class="muted">Saving the result and updating ratings...</p>
+          {/if}
+          <div class="row">
+            <button type="button" class="primary" disabled={game.restarting} onclick={playAgain}>Find another match</button>
+            <button type="button" onclick={lobby}>Back to the lobby</button>
+          </div>
+          {#if game.restarting}
+            <p class="muted small restart">New matches are paused while the server restarts.</p>
+          {/if}
         </div>
       </div>
     </div>
@@ -154,129 +169,142 @@
 {/if}
 
 <style>
-  .empty {
-    max-width: 24rem;
-    margin: 4rem auto;
-    text-align: center;
+  .not-seated {
+    max-width: 34rem;
   }
   .layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 17rem;
-    gap: 1rem;
+    grid-template-columns: minmax(0, 1fr) 18rem;
+    gap: var(--s4);
     align-items: start;
   }
   .main {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: var(--s3);
   }
   .info {
     display: flex;
-    gap: 1.25rem;
+    flex-wrap: wrap;
+    gap: var(--s2) var(--s5);
     align-items: center;
-    color: var(--muted);
-    font-size: 0.9rem;
-  }
-  .info b {
-    color: var(--text);
+    padding: var(--s2) var(--s4);
+    background: var(--sunk);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    font-size: var(--t-sm);
   }
   .muck {
     margin: 0 0 0 auto;
     display: flex;
-    gap: 0.4rem;
+    gap: var(--s2);
     align-items: center;
-    font-size: 0.85rem;
+    font-weight: 400;
   }
   .felt {
     position: relative;
     border-radius: 50% / 38%;
-    background: radial-gradient(ellipse at 50% 45%, #1b7a50 0%, var(--felt) 55%, var(--felt-edge) 100%);
+    background: var(--felt);
     border: 14px solid var(--rail);
-    box-shadow:
-      inset 0 0 40px rgba(0, 0, 0, 0.45),
-      0 10px 30px rgba(0, 0, 0, 0.5);
+    box-shadow: inset 0 0 0 2px var(--felt-line);
     min-height: 30rem;
     display: grid;
     grid-template-rows: auto 1fr auto;
     justify-items: center;
-    padding: 1rem 1rem;
+    padding: var(--s4);
+    color: var(--felt-ink);
   }
   .slot {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--s2);
   }
   .centre {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 0.6rem;
+    gap: var(--s3);
   }
   .board {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--s2);
   }
   .ghost {
     width: 3.4rem;
     height: 4.76rem;
-    border-radius: 0.37rem;
-    border: 1px dashed rgba(255, 255, 255, 0.14);
+    border-radius: 0.3rem;
+    border: 1px dashed var(--felt-line);
   }
   .pot {
     font-weight: 700;
-    background: rgba(0, 0, 0, 0.3);
-    padding: 0.15rem 0.9rem;
-    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.25);
+    padding: 0 var(--s4);
+    border-radius: var(--radius);
+  }
+  .pot.empty {
+    background: none;
+  }
+  .log .none {
+    font-family: var(--font);
+    color: var(--muted);
   }
   .bet {
-    background: rgba(0, 0, 0, 0.35);
-    border: 1px solid rgba(227, 179, 65, 0.6);
-    color: var(--accent);
-    padding: 0.05rem 0.7rem;
-    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--chip);
+    color: var(--chip-ink);
+    padding: 0 var(--s3);
+    border-radius: var(--radius);
     font-weight: 700;
-    font-size: 0.9rem;
+    font-size: var(--t-sm);
   }
   .actions {
-    padding: 0.75rem 1rem;
+    padding: var(--s3) var(--s4);
   }
   .log {
-    height: 41rem;
+    height: 38rem;
     overflow-y: auto;
-    font-size: 0.82rem;
-    padding: 0.75rem 1rem;
-    color: #c9d4cd;
+    font-family: var(--mono);
+    font-size: var(--t-xs);
+    line-height: 1.55;
+    padding: var(--s3) var(--s4);
   }
   .log .sep {
-    color: var(--muted);
-    margin-top: 0.6rem;
-    font-weight: 600;
+    font-weight: 700;
+    margin-top: var(--s3);
+    padding-top: var(--s2);
+    border-top: 1px solid var(--line);
+  }
+  .log .sep:first-child {
+    margin-top: 0;
+    border-top: none;
   }
   .overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: rgba(20, 14, 12, 0.6);
     display: grid;
     place-items: center;
     z-index: 10;
-    padding: 1rem;
+    padding: var(--s4);
   }
   .result {
-    text-align: center;
-    min-width: 20rem;
+    width: min(26rem, 100%);
   }
   .result .rating {
-    font-size: 1.1rem;
+    font-size: var(--t-md);
   }
   .row {
     display: flex;
-    gap: 0.75rem;
-    justify-content: center;
-    margin-top: 1.25rem;
+    flex-wrap: wrap;
+    gap: var(--s3);
+    margin-top: var(--s4);
   }
-  @media (max-width: 900px) {
+  .restart {
+    margin-top: var(--s3);
+  }
+  @media (max-width: 960px) {
     .layout {
       grid-template-columns: 1fr;
     }
@@ -289,11 +317,7 @@
       border-width: 8px;
       border-radius: 28px;
       min-height: 26rem;
-      padding: 0.75rem 0.25rem;
-    }
-    .info {
-      gap: 0.75rem;
-      flex-wrap: wrap;
+      padding: var(--s3) var(--s1);
     }
   }
 </style>

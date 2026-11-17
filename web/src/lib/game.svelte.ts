@@ -37,10 +37,10 @@ class Session {
 export const session = new Session()
 
 const FRIENDLY: Partial<Record<ErrorCode, string>> = {
-  email_not_verified: 'Confirm your email address before joining the queue.',
-  already_in_match: 'Finish your current match first.',
-  rate_limited: 'Slow down a little.',
-  unavailable: 'The server is busy; try again in a moment.',
+  email_not_verified: 'Confirm your email address first. The link is in your inbox.',
+  already_in_match: "You're already in a match. Finish it before starting another.",
+  rate_limited: 'Too many clicks at once. Wait a second and try again.',
+  unavailable: "The server couldn't do that just now. Try again in a moment.",
 }
 
 export type Status = 'offline' | 'connecting' | 'online' | 'replaced'
@@ -56,6 +56,8 @@ class Game {
   pending = $state(false)
   /** The server is restarting once current matches end; no new matches meanwhile. */
   restarting = $state(false)
+  /** Connected at least once since logging in (so a later 'connecting' is a reconnect). */
+  everOnline = $state(false)
 
   private ws: WebSocket | null = null
   /** A match snapshot arrived on the current socket (so its `hello` is stale news). */
@@ -77,6 +79,7 @@ class Game {
     this.ws?.close()
     this.ws = null
     this.status = 'offline'
+    this.everOnline = false
     this.queued = false
     this.table = null
   }
@@ -100,6 +103,7 @@ class Game {
     ws.onopen = () => {
       this.failures = 0
       this.status = 'online'
+      this.everOnline = true
     }
     ws.onmessage = (ev) => {
       // A superseded socket can still deliver (e.g. its own "replaced"): ignore it.
@@ -141,7 +145,7 @@ class Game {
       this.ws.send(JSON.stringify(msg))
       return true
     }
-    this.flash('Not connected — reconnecting…')
+    this.flash("That didn't send: you're not connected. Reconnecting now.")
     return false
   }
 
@@ -193,7 +197,7 @@ class Game {
         // (In a rare race a new match's snapshot can overtake the hello; keep it.)
         if (!msg.in_match && !this.snapshotSeen && this.table && this.table.winner === null) {
           this.table = null
-          this.flash('Your match finished while you were away; see History for the result.')
+          this.flash('Your match finished while you were away. The result is under Your matches.')
         }
         break
       case 'queued':

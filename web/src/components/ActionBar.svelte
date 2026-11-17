@@ -87,7 +87,7 @@
     </div>
   {:else if table.winner === null}
     <p class="muted">
-      {#if table.turn}Waiting for {table.names[table.turn.seat]}…{:else}Next hand shortly…{/if}
+      {#if table.turn}{table.names[table.turn.seat]} is thinking...{:else}Dealing the next hand...{/if}
     </p>
   {/if}
 </div>
@@ -96,39 +96,39 @@
   .bar {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.75rem 1.25rem;
+    gap: var(--s3) var(--s5);
     align-items: center;
     justify-content: flex-end;
     min-height: 3.5rem;
   }
   .waiting {
-    justify-content: center;
+    justify-content: flex-start;
   }
   .waiting p {
     margin: 0;
   }
   .sizing {
     display: flex;
-    gap: 0.6rem;
+    gap: var(--s2);
     align-items: center;
     flex: 1 1 22rem;
     flex-wrap: wrap;
   }
   .presets {
     display: flex;
-    gap: 0.3rem;
+    gap: var(--s1);
   }
   .presets button {
-    padding: 0.3em 0.65em;
-    font-size: 0.8rem;
+    padding: var(--s1) var(--s2);
+    font-size: var(--t-sm);
   }
   .presets button.on {
-    border-color: var(--accent);
-    color: var(--accent);
+    border-color: var(--brand);
+    color: var(--link);
   }
   input[type='range'] {
     flex: 1 1 8rem;
-    accent-color: var(--accent);
+    accent-color: var(--brand);
   }
   .amount {
     width: 6.5rem;
@@ -136,23 +136,15 @@
   }
   .buttons {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--s2);
   }
   .buttons button {
     min-width: 7.5rem;
-    padding: 0.75em 1.1em;
-  }
-  .fold {
-    color: #f3b0b0;
+    justify-content: center;
+    padding: var(--s3) var(--s4);
   }
   kbd {
-    font-family: var(--mono);
-    font-size: 0.65rem;
-    opacity: 0.55;
-    margin-left: 0.3em;
-    border: 1px solid currentColor;
-    border-radius: 3px;
-    padding: 0 0.25em;
+    opacity: 0.6;
   }
   @media (max-width: 640px) {
     .buttons {

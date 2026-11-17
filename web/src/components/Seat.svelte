@@ -70,7 +70,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.45rem;
+    gap: var(--s2);
     position: relative;
   }
   .me {
@@ -78,7 +78,7 @@
   }
   .cards {
     display: flex;
-    gap: 0.35rem;
+    gap: var(--s1);
     min-height: 6.2rem;
     align-items: flex-end;
   }
@@ -88,63 +88,59 @@
   .plate {
     position: relative;
     min-width: 11rem;
-    background: rgba(10, 14, 12, 0.88);
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 0.45rem 0.9rem 0.5rem;
+    background: var(--plate);
+    color: var(--plate-ink);
+    border: 2px solid var(--line-strong);
+    border-radius: var(--radius);
+    padding: var(--s1) var(--s4) var(--s2);
     text-align: center;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
-    transition:
-      border-color 0.15s,
-      box-shadow 0.15s;
   }
   .acting .plate {
-    border-color: var(--accent);
-    box-shadow:
-      0 0 0 1px var(--accent),
-      0 4px 18px rgba(227, 179, 65, 0.25);
+    border-color: var(--acting);
+    border-width: 3px;
+    padding: calc(var(--s1) - 1px) calc(var(--s4) - 1px) calc(var(--s2) - 1px);
   }
   .who {
     display: flex;
     justify-content: center;
-    gap: 0.5rem;
+    gap: var(--s2);
     align-items: baseline;
   }
   .name {
     font-weight: 700;
   }
   .rating {
-    font-size: 0.75rem;
+    font-size: var(--t-xs);
     color: var(--muted);
   }
   .stack {
-    font-size: 1.15rem;
+    font-family: var(--serif);
+    font-size: var(--t-lg);
     font-weight: 700;
-    color: var(--accent);
   }
   .dealer {
     position: absolute;
-    top: -0.6rem;
-    right: -0.6rem;
+    top: -0.7rem;
+    right: -0.7rem;
     width: 1.5rem;
     height: 1.5rem;
     border-radius: 50%;
-    background: #f5f1e6;
-    color: #222;
-    font-size: 0.75rem;
-    font-weight: 800;
+    background: var(--felt-ink);
+    color: var(--spade);
+    border: 2px solid var(--chip);
+    font-size: var(--t-xs);
+    font-weight: 700;
     display: grid;
     place-items: center;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
   }
   .clock {
     position: relative;
-    margin-top: 0.35rem;
+    margin-top: var(--s1);
     height: 1.1rem;
-    border-radius: 6px;
-    background: #222c27;
+    border-radius: 2px;
+    background: var(--sunk);
     overflow: hidden;
-    font-size: 0.7rem;
+    font-size: var(--t-xs);
     display: grid;
     place-items: center;
   }
@@ -152,7 +148,7 @@
     position: absolute;
     inset: 0 auto 0 0;
     background: var(--good);
-    opacity: 0.55;
+    opacity: 0.45;
     transition: width 0.2s linear;
   }
   .clock.low .bar {
@@ -163,14 +159,13 @@
     font-weight: 700;
   }
   .shown {
-    font-size: 0.8rem;
-    color: var(--text);
-    background: rgba(0, 0, 0, 0.35);
-    padding: 0.1rem 0.6rem;
-    border-radius: 999px;
+    font-size: var(--t-sm);
+    background: rgba(0, 0, 0, 0.3);
+    padding: 0 var(--s3);
+    border-radius: var(--radius);
   }
   .won {
-    font-weight: 800;
-    color: var(--good);
+    font-weight: 700;
+    color: var(--chip-ink);
   }
 </style>

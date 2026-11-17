@@ -35,13 +35,30 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   if (res.status === 204) return undefined as T
   const data = await res.json().catch(() => null)
   if (!res.ok) {
-    throw new ApiError(
-      res.status,
-      data?.error ?? 'error',
-      data?.message ?? `Request failed (${res.status})`,
-    )
+    const code: string = data?.error ?? 'error'
+    const message =
+      FRIENDLY[code] ??
+      (data?.message
+        ? sentence(data.message)
+        : `The server couldn't handle that (error ${res.status}). Try again in a moment.`)
+    throw new ApiError(res.status, code, message)
   }
   return data as T
+}
+
+/** Clearer wording for some server errors (the rest are shown as sentences). */
+const FRIENDLY: Record<string, string> = {
+  bad_credentials: "That name or email and password don't match an account.",
+  bad_token: 'This link has expired or has already been used.',
+  internal: 'Something broke on our side. Try again in a moment.',
+  rate_limited: 'Too many attempts. Wait a minute, then try again.',
+}
+
+/** "that name is taken" -> "That name is taken." */
+function sentence(s: string): string {
+  const t = s.trim()
+  if (!t) return t
+  return t[0].toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? '' : '.')
 }
 
 export const api = {

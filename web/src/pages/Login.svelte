@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { LogIn, TriangleAlert } from '@lucide/svelte'
+  import Icon from '../components/Icon.svelte'
   import { ApiError } from '../lib/api'
   import { session } from '../lib/game.svelte'
   import { link, router } from '../lib/router.svelte'
@@ -16,44 +18,37 @@
       await session.login(login.trim(), password)
       router.go('/', true)
     } catch (err) {
-      error = err instanceof ApiError ? err.message : 'Something went wrong.'
+      error = err instanceof ApiError ? err.message : "Logging in didn't work. Try again in a moment."
     } finally {
       busy = false
     }
   }
 </script>
 
-<form class="auth panel" onsubmit={submit}>
-  <h1>Log in</h1>
-  <label>
-    Name or email
-    <input type="text" autocomplete="username" required bind:value={login} />
-  </label>
-  <label>
-    Password
-    <input type="password" autocomplete="current-password" required bind:value={password} />
-  </label>
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
-  <button type="submit" class="primary wide" disabled={busy}>{busy ? 'Logging in…' : 'Log in'}</button>
-  <p class="muted alt">
-    <a href="/forgot-password" onclick={link}>Forgot your password?</a><br />
-    New here? <a href="/register" onclick={link}>Create an account</a>
-  </p>
-</form>
+<div class="auth-page">
+  <form class="block" onsubmit={submit}>
+    <header><Icon of={LogIn} /><h1 class="h">Log in</h1></header>
+    <div class="block-body">
+      <label>
+        Name or email
+        <input type="text" autocomplete="username" required bind:value={login} />
+      </label>
+      <label>
+        Password
+        <input type="password" autocomplete="current-password" required bind:value={password} />
+      </label>
+      {#if error}<div class="alert" role="alert"><Icon of={TriangleAlert} /><span>{error}</span></div>{/if}
+      <button type="submit" class="primary big submit" disabled={busy}>{busy ? 'Logging in...' : 'Log in'}</button>
+      <p class="after"><a href="/forgot-password" onclick={link}>Forgotten your password?</a></p>
+    </div>
+  </form>
 
-<style>
-  .auth {
-    max-width: 24rem;
-    margin: 3rem auto;
-    padding: 1.75rem;
-  }
-  .wide {
-    width: 100%;
-    margin-top: 0.4rem;
-  }
-  .alt {
-    margin: 1.1rem 0 0;
-    text-align: center;
-    font-size: 0.9rem;
-  }
-</style>
+  <aside class="block">
+    <header><h2 class="h">New here?</h2></header>
+    <div class="block-body small">
+      <p>An account takes a minute: a display name, an email address and a password.</p>
+      <p>You'll need to confirm your email before your first match.</p>
+      <p><a href="/register" onclick={link}>Create a free account</a></p>
+    </div>
+  </aside>
+</div>

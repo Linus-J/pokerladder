@@ -70,13 +70,13 @@ test('two players queue, play a match and see the result', async ({ browser }) =
   }
 
   const headings = await Promise.all(result.map((r) => r.getByRole('heading').textContent()))
-  expect(headings.sort()).toEqual(['You lost', 'You won!'])
+  expect(headings.sort()).toEqual(['You lost the match', 'You won the match'])
   for (const r of result) await expect(r).toContainText(/Rating 1500 → (1516|1484)/)
 
   // History shows the match from each side.
   const page = pages[0]
-  await page.getByRole('button', { name: 'Lobby' }).click()
-  await page.getByRole('link', { name: 'History' }).click()
+  await page.getByRole('button', { name: 'Back to the lobby' }).click()
+  await page.getByRole('link', { name: 'Your matches', exact: true }).click()
   const row = page.locator('table.list tbody tr').first()
   await expect(row).toContainText(names[1])
   await row.getByRole('link').click()
@@ -95,4 +95,24 @@ test('the lobby is usable logged out and on a phone', async ({ browser }) => {
   expect(overflow).toBe(false)
   await page.goto('/history')
   await expect(page).toHaveURL(/\/login$/)
+})
+
+test('the information pages load and fit a phone', async ({ browser }) => {
+  const page = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage()
+  for (const [path, heading] of [
+    ['/about', 'About Pokerladder'],
+    ['/leaderboard', 'Leaderboard'],
+    ['/privacy', 'Privacy notice'],
+    ['/login', 'Log in'],
+    ['/register', 'Create an account'],
+  ]) {
+    await page.goto(path)
+    await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible()
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
+    expect(overflow, `${path} scrolls sideways`).toBe(false)
+  }
+  // In-page links reach their section, even from the same page.
+  await page.goto('/about')
+  await page.locator('footer').getByRole('link', { name: 'Fair play' }).click()
+  await expect(page.getByRole('heading', { name: 'Fair play' })).toBeInViewport()
 })

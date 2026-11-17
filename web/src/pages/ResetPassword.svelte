@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { Check, KeyRound, TriangleAlert } from '@lucide/svelte'
   import { onMount } from 'svelte'
+  import Icon from '../components/Icon.svelte'
   import { ApiError, api } from '../lib/api'
   import { session } from '../lib/game.svelte'
   import { link, router } from '../lib/router.svelte'
@@ -8,6 +10,8 @@
   let password = $state('')
   let confirm = $state('')
   let error = $state<string | null>(null)
+  /** The server rejected the link itself (expired or used). */
+  let badLink = $state(false)
   let busy = $state(false)
   let done = $state(false)
 
@@ -20,11 +24,12 @@
   async function submit(e: SubmitEvent) {
     e.preventDefault()
     if (password !== confirm) {
-      error = "The passwords don't match."
+      error = "The two passwords don't match."
       return
     }
     busy = true
     error = null
+    badLink = false
     try {
       await api.confirmPasswordReset(token, password)
       // Every session of the reset account has ended. This browser may have been
@@ -32,51 +37,49 @@
       await session.load().catch(() => {})
       done = true
     } catch (err) {
-      error = err instanceof ApiError ? err.message : 'Something went wrong.'
+      error = err instanceof ApiError ? err.message : "Saving your password didn't work. Try again in a moment."
+      badLink = err instanceof ApiError && err.code === 'bad_token'
     } finally {
       busy = false
     }
   }
 </script>
 
-{#if done}
-  <div class="auth panel" data-testid="reset-done">
-    <h1>Password changed</h1>
-    <p>That account has been logged out everywhere. Log in with your new password.</p>
-    <p class="alt"><a href="/login" onclick={link}>Log in</a></p>
-  </div>
-{:else}
-  <form class="auth panel" onsubmit={submit}>
-    <h1>Choose a new password</h1>
-    <label>
-      New password
-      <input type="password" autocomplete="new-password" required minlength="8" maxlength="128" bind:value={password} />
-    </label>
-    <label>
-      Repeat it
-      <input type="password" autocomplete="new-password" required minlength="8" maxlength="128" bind:value={confirm} />
-    </label>
-    {#if error}
-      <p class="error" role="alert">{error}</p>
-      <p class="muted"><a href="/forgot-password" onclick={link}>Get a new link</a></p>
-    {/if}
-    <button type="submit" class="primary wide" disabled={busy}>{busy ? 'Saving…' : 'Set password'}</button>
-  </form>
-{/if}
-
-<style>
-  .auth {
-    max-width: 24rem;
-    margin: 3rem auto;
-    padding: 1.75rem;
-  }
-  .wide {
-    width: 100%;
-    margin-top: 0.4rem;
-  }
-  .alt {
-    margin: 1.1rem 0 0;
-    text-align: center;
-    font-size: 0.9rem;
-  }
-</style>
+<div class="auth-page">
+  {#if done}
+    <section class="block" data-testid="reset-done">
+      <header><Icon of={Check} /><h1 class="h">Password changed</h1></header>
+      <div class="block-body">
+        <p>That account is now logged out everywhere. Log in with your new password.</p>
+        <p><a class="button primary" href="/login" onclick={link}>Log in</a></p>
+      </div>
+    </section>
+  {:else}
+    <form class="block" onsubmit={submit}>
+      <header><Icon of={KeyRound} /><h1 class="h">Choose a new password</h1></header>
+      <div class="block-body">
+        <label>
+          New password
+          <input type="password" autocomplete="new-password" required minlength="8" maxlength="128" bind:value={password} />
+          <span class="hint">At least 8 characters.</span>
+        </label>
+        <label>
+          The same password again
+          <input type="password" autocomplete="new-password" required minlength="8" maxlength="128" bind:value={confirm} />
+        </label>
+        {#if error}
+          <div class="alert" role="alert">
+            <Icon of={TriangleAlert} />
+            <span>
+              {error}
+              {#if badLink}<a href="/forgot-password" onclick={link}>Ask for a new link</a>.{/if}
+            </span>
+          </div>
+        {/if}
+        <button type="submit" class="primary big submit" disabled={busy}>
+          {busy ? 'Saving...' : 'Save new password'}
+        </button>
+      </div>
+    </form>
+  {/if}
+</div>

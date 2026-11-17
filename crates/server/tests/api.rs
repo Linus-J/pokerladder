@@ -1243,3 +1243,129 @@ async fn websocket_floods_are_refused_then_disconnected(db: PgPool) {
     }
     while recv(&mut ws).await.is_some() {}
 }
+
+/// Connects, returning the socket and the user id from `Hello`.
+async fn connect_user(
+    addr: std::net::SocketAddr,
+    cookie: &str,
+) -> (Ws, pokerladder_server::protocol::UserId) {
+    let mut ws = ws_connect(addr, Some(cookie), Some(ORIGIN)).await.unwrap();
+    let Some(ServerMsg::Hello { user_id, .. }) = recv(&mut ws).await else {
+        panic!("expected hello")
+    };
+    (ws, user_id)
+}
+
+#[sqlx::test(migrator = "pokerladder_server::db::MIGRATOR")]
+async fn shutdown_lets_matches_finish_and_starts_no_new_ones(db: PgPool) {
+    let app = app(db, true);
+    // Served the way main.rs does it: the shutdown runs inside the graceful-shutdown
+    // future, so the server keeps accepting connections while it drains.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn({
+        let router = app.router.clone();
+        let state = app.state.clone();
+        async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = stop_rx.await;
+                    state
+                        .shutdown(Duration::from_secs(120), std::future::pending())
+                        .await;
+                })
+                .await
+                .unwrap()
+        }
+    });
+
+    let cookies: Vec<String> = {
+        let mut v = vec![];
+        for name in ["gina", "hank", "ivy", "jack"] {
+            v.push(signup(&app, name).await);
+        }
+        v
+    };
+    let (mut gina, gina_id) = connect_user(addr, &cookies[0]).await;
+    let (mut hank, _) = connect_user(addr, &cookies[1]).await;
+    send(&mut gina, &ClientMsg::QueueJoin).await;
+    send(&mut hank, &ClientMsg::QueueJoin).await;
+    let mut seated = false;
+    for _ in 0..500 {
+        if app.state.hub.seat(gina_id).is_some() {
+            seated = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(seated, "gina and hank weren't paired within 5 s");
+    // Nobody acts yet, so the match can't end before the checks below (each
+    // decision has a 15 s clock).
+
+    // Ivy is waiting in the queue when the shutdown begins.
+    let (mut ivy, ivy_id) = connect_user(addr, &cookies[2]).await;
+    send(&mut ivy, &ClientMsg::QueueJoin).await;
+    assert!(matches!(recv(&mut ivy).await, Some(ServerMsg::Queued)));
+
+    stop_tx.send(()).unwrap();
+    // The queue task exits promptly, and the running match holds up the drain.
+    tokio::time::timeout(Duration::from_secs(2), app.state.matchmaker.stopped())
+        .await
+        .expect("the queue should close when the shutdown begins");
+    assert!(
+        !app.state.drain(Duration::from_millis(50)).await,
+        "a running match must hold up the shutdown"
+    );
+
+    // Ivy is told, and taken out of the queue.
+    let mut told = (false, false);
+    while told != (true, true) {
+        match recv(&mut ivy).await.expect("ivy disconnected") {
+            ServerMsg::Restarting => told.0 = true,
+            ServerMsg::QueueLeft => told.1 = true,
+            _ => {}
+        }
+    }
+    // Jack connects during the drain (new connections are still accepted): he hears
+    // about the restart straight after Hello, and can't queue.
+    let (mut jack, jack_id) = connect_user(addr, &cookies[3]).await;
+    assert!(matches!(recv(&mut jack).await, Some(ServerMsg::Restarting)));
+    for ws in [&mut ivy, &mut jack] {
+        send(ws, &ClientMsg::QueueJoin).await;
+        // (`Restarting` may repeat: each drain call broadcasts it.)
+        loop {
+            match recv(ws).await.expect("disconnected") {
+                ServerMsg::Restarting => {}
+                ServerMsg::QueueLeft => break,
+                m => panic!("expected the join to be refused, got {m:?}"),
+            }
+        }
+    }
+    // Ivy and Jack would pair at once if the queue were open: they never do.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(app.state.hub.seat(ivy_id).is_none());
+    assert!(app.state.hub.seat(jack_id).is_none());
+
+    // Now the bots play: the match runs to a normal, rated finish...
+    for p in [tokio::spawn(play(gina)), tokio::spawn(play(hank))] {
+        let (_, _, _, end) = tokio::time::timeout(Duration::from_secs(120), p)
+            .await
+            .unwrap()
+            .unwrap();
+        let ServerMsg::MatchEnded { ratings, .. } = end else {
+            unreachable!()
+        };
+        assert!(
+            ratings.is_some(),
+            "the match should be rated, not abandoned"
+        );
+    }
+    // ...after which the server closes every socket and stops.
+    tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .expect("the server should stop once the match is over")
+        .unwrap();
+    while recv(&mut ivy).await.is_some() {}
+    while recv(&mut jack).await.is_some() {}
+}

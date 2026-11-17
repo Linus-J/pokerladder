@@ -54,6 +54,8 @@ class Game {
   notice = $state<string | null>(null)
   /** An action was sent and the server hasn't answered yet: don't send another. */
   pending = $state(false)
+  /** The server is restarting once current matches end; no new matches meanwhile. */
+  restarting = $state(false)
 
   private ws: WebSocket | null = null
   /** A match snapshot arrived on the current socket (so its `hello` is stale news). */
@@ -177,9 +179,13 @@ class Game {
   private receive(msg: ServerMsg) {
     const now = performance.now()
     // Any news about the match answers (or overtakes) an action in flight.
-    if (msg.type !== 'queued' && msg.type !== 'queue_left') this.pending = false
+    if (msg.type !== 'queued' && msg.type !== 'queue_left' && msg.type !== 'restarting') {
+      this.pending = false
+    }
     switch (msg.type) {
       case 'hello':
+        // A fresh server (or this one, if it is still draining: `restarting` follows).
+        this.restarting = false
         if (session.me) {
           session.me = { ...session.me, rating: msg.rating, email_verified: msg.email_verified }
         }
@@ -218,6 +224,10 @@ class Game {
         break
       case 'error':
         this.flash(FRIENDLY[msg.code] ?? msg.message)
+        break
+      case 'restarting':
+        this.restarting = true
+        this.queued = false
         break
       case 'replaced':
         this.status = 'replaced'

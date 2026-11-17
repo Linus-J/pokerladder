@@ -12,7 +12,7 @@ in_match: boolean, } | { "type": "queued" } | { "type": "queue_left" } | { "type
 /**
  * Indexed by seat; `None` if the result could not be recorded.
  */
-ratings: [RatingChange, RatingChange] | null, } | { "type": "error", code: ErrorCode, message: string, } | { "type": "replaced" };
+ratings: [RatingChange, RatingChange] | null, } | { "type": "error", code: ErrorCode, message: string, } | { "type": "replaced" } | { "type": "restarting" };
 
 export type ErrorCode = "bad_message" | "email_not_verified" | "already_in_match" | "not_in_match" | "illegal_action" | "unavailable" | "rate_limited";
 

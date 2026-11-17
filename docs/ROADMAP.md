@@ -94,12 +94,17 @@ compare within a row rather than across runs):
 Possible later improvements: parallel generation (rayon), or an on-disk cache with
 invariant validation to cut startup time.
 
-## Status (2026-11-15)
+## Status (2026-11-17)
 
-Phases 1 (engine) and 2 (server) are merged into `main`. Phase 3 (web client) is
-on branch `phase-3-web`: a playable Svelte client served by the server, plus the
-Phase 2 launch blockers (SMTP mail, rate limiting, no email enumeration, history
-API). Browser tests play a whole match between two real browsers.
+Phases 1 to 3 and Phase 4a are merged into `main` and live at
+https://pokerladder.app (a home PC behind a Cloudflare Tunnel; see
+`deploy/home/README.md`). Phase 4a (PR #9) added Glicko-2, monthly UTC seasons,
+season standings and the repeat-opponent cap; ratings were reset to 1500 when it
+deployed. `deploy/home/reset-ladder.sh` wipes ranks and match history (keeping
+accounts) to test the rating system from scratch.
+
+**Next: Phase 4b** (integrity), planned below under Phase 4. Start a branch
+`phase-4b-integrity` from `main`.
 
 **Before a public launch (needs the owner):** an SMTP provider and DNS (SPF/DKIM)
 for the sending domain; a host + domain + TLS reverse proxy; solicitor review of the
@@ -239,9 +244,31 @@ privacy notice (draft in the app) and the competition terms (not yet written).
       Glicko-2 rating drives matchmaking only. Beta Elo ratings were reset.
 - [x] Repeat opponents: only a pair's first 3 matches in any 24 hours are rated;
       later ones are played unrated and the table says so before the first hand.
-- [ ] Chip-dumping heuristics run over the audit log (e.g. folding strong hands
-      to a specific opponent), surfaced as reports to review before any payout.
-- [ ] One account per person; identity check before any payout.
+- [x] `deploy/home/reset-ladder.sh`: wipe matches, hands, seasons and ratings
+      (accounts stay), with a backup first; refuses while a match is running.
+- [ ] **4b. Chip-dumping heuristics** over the audit log, as reports for a person to
+      review before any payout (no automatic bans). The data is there already:
+      `hands.audit_events` is the unfiltered `WireEvent` stream as JSON (hole cards
+      of both players, every action, board, showdown), per hand, with
+      `matches` giving the pair, winner, season and `rated`. Candidate signals,
+      each computed per player pair and season:
+      - folds of strong hands facing a bet (e.g. preflop top ~10%, or a made
+        hand that was ahead on the river) at a rate far above the player's own
+        rate against everyone else;
+      - big all-ins or calls with very weak hands that lose to that one opponent;
+      - match length and chip flow: very short matches, or one player losing to
+        the same opponent much more than their rating predicts;
+      - how often the pair meets (the cap limits rated games, not meetings).
+      Equity needs the evaluator: reuse `pokerladder_engine::eval` (an
+      equity-vs-known-hand helper may be needed; benchmark it).
+      Output to decide with the owner: a CLI report
+      (`cargo run -p pokerladder-server --bin integrity -- --season 2026-11`)
+      is the cheapest start; a stored `integrity_flags` table plus an admin page
+      needs an admin role, which doesn't exist yet. Test each signal with
+      planted dumping matches built from engine hands (mutation-test them).
+- [ ] **One account per person**: an identity check before any payout (manual).
+      Detecting multi-accounting from IPs or devices means storing them, which
+      changes the privacy notice: ask the owner before collecting anything new.
 
 ### 5. Prizes
 - **Model: free entry, sponsor-funded prize.** No payment of any kind is required to

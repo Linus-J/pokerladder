@@ -8,6 +8,7 @@ use pokerladder_engine::holdem::Seat;
 use rand::RngExt;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::protocol::{ErrorCode, ServerMsg, UserId};
 use crate::table::{self, MatchCmd, MatchSetup};
@@ -59,6 +60,8 @@ enum QueueCmd {
 #[derive(Clone)]
 pub struct Matchmaker {
     tx: mpsc::UnboundedSender<QueueCmd>,
+    /// Cancelled once the queue task has exited: after that no match can start.
+    stopped: CancellationToken,
 }
 
 impl Matchmaker {
@@ -66,16 +69,25 @@ impl Matchmaker {
     /// (which itself contains this `Matchmaker`).
     pub fn spawn(state_rx: tokio::sync::oneshot::Receiver<AppState>) -> Matchmaker {
         let (tx, rx) = mpsc::unbounded_channel();
+        let stopped = CancellationToken::new();
+        let guard = stopped.clone().drop_guard();
         tokio::spawn(async move {
+            let _guard = guard;
             let Ok(state) = state_rx.await else { return };
             run(state, rx).await;
         });
-        Matchmaker { tx }
+        Matchmaker { tx, stopped }
     }
 
-    /// Adds (or re-adds, keeping their place) a player.
-    pub fn join(&self, user: UserId, rating: f64) {
-        let _ = self.tx.send(QueueCmd::Join { user, rating });
+    /// Adds (or re-adds, keeping their place) a player. False if the queue has closed
+    /// for a shutdown (the player isn't queued).
+    pub fn join(&self, user: UserId, rating: f64) -> bool {
+        self.tx.send(QueueCmd::Join { user, rating }).is_ok()
+    }
+
+    /// Resolves once the queue task has exited (after a shutdown began).
+    pub async fn stopped(&self) {
+        self.stopped.cancelled().await
     }
 
     pub fn leave(&self, user: UserId) {
@@ -91,6 +103,27 @@ async fn run(state: AppState, mut rx: mpsc::UnboundedReceiver<QueueCmd>) {
         // Pairing runs on the tick and on joins, not on every command (cheap `Leave`
         // spam can't make the queue do O(n^2) work per message).
         tokio::select! {
+            // Checked first: once a shutdown begins, nobody else gets paired.
+            biased;
+            () = state.draining.cancelled() => {
+                // Close the queue (later joins fail) and tell everyone waiting,
+                // including joins still in the channel.
+                rx.close();
+                let mut waiting: Vec<UserId> = queue.drain(..).map(|w| w.user).collect();
+                while let Ok(cmd) = rx.try_recv() {
+                    if let QueueCmd::Join { user, .. } = cmd {
+                        waiting.push(user);
+                    }
+                }
+                waiting.sort_unstable();
+                waiting.dedup();
+                for user in waiting {
+                    if let Some(c) = state.hub.conn(user) {
+                        c.send(ServerMsg::QueueLeft);
+                    }
+                }
+                return;
+            }
             cmd = rx.recv() => match cmd {
                 Some(QueueCmd::Join { user, rating }) => {
                     if let Some(w) = queue.iter_mut().find(|w| w.user == user) {
@@ -106,6 +139,9 @@ async fn run(state: AppState, mut rx: mpsc::UnboundedReceiver<QueueCmd>) {
                 None => return,
             },
             _ = tick.tick() => {}
+        }
+        if state.draining.is_cancelled() {
+            continue; // the drain arm above runs next
         }
         // Players who got seated some other way (or disconnected) drop out.
         queue.retain(|w| state.hub.seat(w.user).is_none() && state.hub.conn(w.user).is_some());
@@ -127,7 +163,8 @@ async fn run(state: AppState, mut rx: mpsc::UnboundedReceiver<QueueCmd>) {
         });
         for users in starts {
             let state = state.clone();
-            tokio::spawn(async move {
+            // Tracked, so a shutdown can wait for the match to finish.
+            state.clone().matches.spawn(async move {
                 if let Err(e) = start_match(state.clone(), users).await {
                     tracing::error!("failed to start match: {e:#}");
                     // Don't leave them believing they're still queued.

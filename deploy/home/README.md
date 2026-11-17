@@ -5,9 +5,15 @@ services** for the account that owns the checkout. Nothing listens on the networ
 the server binds `127.0.0.1:8080`, Postgres `127.0.0.1:55433`, and `cloudflared`
 makes an outbound connection to Cloudflare, which serves `https://pokerladder.app`.
 
-Suitable for a private beta. Every restart (reboot, update, crash) abandons the
-matches in progress, unrated. Before seasons with prizes, move to a VPS (same setup
-with Caddy instead of the tunnel).
+Suitable for a private beta. `systemctl --user stop/restart pokerladder` (and so
+`update.sh`) is graceful: no new matches start, players see a notice, and matches
+in progress play to the end first (up to `DRAIN_TIMEOUT_SECS`, default 45 minutes).
+A reboot or shutdown of the PC does **not** wait that long (systemd kills user
+services after about two minutes), so before rebooting run
+`systemctl --user stop pokerladder` and wait for it to return. A crash, power cut or
+forced kill abandons matches in progress, unrated.
+Before seasons with prizes, move to a VPS (same setup with Caddy instead of the
+tunnel).
 
 ## One-time setup
 
@@ -40,7 +46,8 @@ with Caddy instead of the tunnel).
 |---|---|
 | Logs | `journalctl --user -u pokerladder -f` |
 | Status | `systemctl --user status pokerladder pokerladder-db pokerladder-tunnel` |
-| Deploy `main` | `deploy/home/update.sh` (when nobody is playing) |
+| Deploy `main` | `deploy/home/update.sh` (waits for matches in progress) |
+| Stop now, abandoning matches | `systemctl --user kill -s INT pokerladder` while it is draining |
 | Backup now | `systemctl --user start pokerladder-backup` |
 | psql | `docker exec -it pokerladder-prod-db-1 psql -U pokerladder` |
 

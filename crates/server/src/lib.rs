@@ -17,6 +17,7 @@ pub mod ws;
 
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::State;
@@ -24,9 +25,13 @@ use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::routing::{any, get, post};
 use pokerladder_engine::MatchConfig;
 use sqlx::PgPool;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tower::ServiceBuilder;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
+
+use crate::protocol::ServerMsg;
 
 use crate::config::Config;
 use crate::db::PgStore;
@@ -49,6 +54,10 @@ pub struct Inner {
     pub limiters: Limiters,
     pub match_config: MatchConfig,
     pub timing: Timing,
+    /// Cancelled when a shutdown begins (see [`AppState::drain`]).
+    pub draining: CancellationToken,
+    /// Every match in progress.
+    pub matches: TaskTracker,
 }
 
 impl Deref for AppState {
@@ -79,9 +88,64 @@ impl AppState {
             mailer,
             match_config,
             timing,
+            draining: CancellationToken::new(),
+            matches: TaskTracker::new(),
         }));
         let _ = state_tx.send(state.clone());
         state
+    }
+
+    /// Starts shutting down without abandoning anyone: the queue is emptied and
+    /// closed, everyone online is told, and matches in progress play to the end while
+    /// the server keeps accepting (re)connections. Returns once every match has
+    /// finished (true) or `timeout` has passed (false; the rest are marked abandoned
+    /// at the next startup).
+    pub async fn drain(&self, timeout: Duration) -> bool {
+        self.draining.cancel();
+        for conn in self.hub.conns() {
+            conn.send(ServerMsg::Restarting);
+        }
+        tokio::time::timeout(timeout, async {
+            // Only once the queue task has exited can no further match be spawned;
+            // closing the tracker before that could let `wait` return early.
+            self.matchmaker.stopped().await;
+            self.matches.close();
+            self.matches.wait().await;
+        })
+        .await
+        .is_ok()
+    }
+
+    /// The whole shutdown, for `axum::serve(..).with_graceful_shutdown`: drain (up to
+    /// `timeout`, or until `abort` resolves), then close every WebSocket. The server
+    /// keeps accepting connections until this returns, so players can reconnect to
+    /// their match meanwhile.
+    pub async fn shutdown(&self, timeout: Duration, abort: impl Future<Output = ()>) {
+        tracing::info!(
+            ?timeout,
+            "shutting down: no new matches; waiting for matches in progress \
+             (signal again to stop now)"
+        );
+        tokio::select! {
+            finished = self.drain(timeout) => {
+                if finished {
+                    tracing::info!("all matches finished");
+                } else {
+                    tracing::warn!("drain timed out; unfinished matches will be abandoned");
+                }
+            }
+            () = abort => {
+                tracing::warn!("stopping now; unfinished matches will be abandoned");
+            }
+        }
+        self.close_connections();
+    }
+
+    /// Closes every WebSocket (the last step of a shutdown, after [`drain`](Self::drain)).
+    pub fn close_connections(&self) {
+        for conn in self.hub.conns() {
+            conn.kill.cancel();
+        }
     }
 }
 

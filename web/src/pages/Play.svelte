@@ -146,7 +146,7 @@
         {/if}
         <div class="row">
           <button type="button" onclick={lobby}>Lobby</button>
-          <button type="button" class="primary" onclick={playAgain}>Play again</button>
+          <button type="button" class="primary" disabled={game.restarting} onclick={playAgain}>Play again</button>
         </div>
       </div>
     </div>

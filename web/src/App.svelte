@@ -62,6 +62,10 @@
   </div>
 {:else if session.me && game.status === 'connecting'}
   <div class="banner subtle">Reconnecting…</div>
+{:else if game.restarting}
+  <div class="banner" data-testid="restarting">
+    The server is restarting for an update. Matches in progress will finish as normal; new matches start again in a few minutes.
+  </div>
 {/if}
 {#if game.notice}<div class="toast" role="status">{game.notice}</div>{/if}
 

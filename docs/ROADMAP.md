@@ -195,6 +195,10 @@ privacy notice (draft in the app) and the competition terms (not yet written).
 - [ ] If `finish_match` fails 5 times (~15 s) the result is lost and the match is
       later marked abandoned; consider a pending-results table + reconciler.
 - [ ] Single-instance only: startup marks every `in_progress` match abandoned.
+- [x] Graceful shutdown (SIGINT/SIGTERM): the queue closes, everyone online gets a
+      `restarting` notice, matches in progress play to the end while players can
+      still reconnect, then sockets close. Waits up to `DRAIN_TIMEOUT_SECS`
+      (default 45 min); a second signal stops at once.
 - [x] Draft privacy notice (`/privacy`) discloses audit-log retention.
       **Needs legal review**, together with competition terms (not yet written).
 - [x] `GET /api/matches`, `GET /api/matches/{id}/hands` (own seat's view only;

@@ -79,6 +79,10 @@ pub enum ServerMsg {
     /// This connection was superseded by a newer one for the same account and is about
     /// to close.
     Replaced,
+    /// The server is shutting down for a restart: matches in progress play to the
+    /// end, but no new ones start (queue joins are refused). Sent to everyone online
+    /// when it begins, and on connecting while it lasts.
+    Restarting,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]

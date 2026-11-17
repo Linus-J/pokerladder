@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use pokerladder_engine::MatchConfig;
@@ -62,15 +63,53 @@ async fn main() -> anyhow::Result<()> {
         None => tracing::warn!("no web client build found (run `npm run build` in web/)"),
     }
 
+    let drain_timeout = match std::env::var("DRAIN_TIMEOUT_SECS") {
+        Ok(s) => Duration::from_secs(s.parse().context("DRAIN_TIMEOUT_SECS")?),
+        Err(_) => DEFAULT_DRAIN_TIMEOUT,
+    };
+
     let bind = config.bind;
     let state = AppState::new(config, db, mailer, match_config, Timing::STANDARD);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "listening");
-    let app = router(state).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let app = router(state.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    // Listening from now on, so no signal is missed (the first starts the drain, a
+    // second stops at once).
+    let mut signals = Signals::new()?;
+    let shutdown = async move {
+        signals.next().await;
+        state.shutdown(drain_timeout, signals.next()).await;
+    };
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown)
         .await?;
     Ok(())
+}
+
+/// How long a shutdown waits for matches in progress (`DRAIN_TIMEOUT_SECS`). The
+/// blinds keep rising, so every match ends.
+const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(45 * 60);
+
+/// SIGINT (Ctrl-C, and our systemd unit's KillSignal) or SIGTERM (systemd's and
+/// Docker's default).
+struct Signals {
+    int: tokio::signal::unix::Signal,
+    term: tokio::signal::unix::Signal,
+}
+
+impl Signals {
+    fn new() -> anyhow::Result<Signals> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Signals {
+            int: signal(SignalKind::interrupt()).context("installing the SIGINT handler")?,
+            term: signal(SignalKind::terminate()).context("installing the SIGTERM handler")?,
+        })
+    }
+
+    async fn next(&mut self) {
+        tokio::select! {
+            _ = self.int.recv() => {}
+            _ = self.term.recv() => {}
+        }
+    }
 }

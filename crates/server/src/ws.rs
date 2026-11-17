@@ -115,6 +115,9 @@ async fn run(state: AppState, user: User, socket: WebSocket) {
         email_verified: user.email_verified,
         in_match: seat.is_some(),
     });
+    if state.draining.is_cancelled() {
+        conn.send(ServerMsg::Restarting);
+    }
     if let Some(old) = old {
         old.send(ServerMsg::Replaced);
         old.kill.cancel();
@@ -205,6 +208,11 @@ async fn on_message(state: &AppState, user: &User, conn: &Conn, text: &str) {
     };
     match msg {
         ClientMsg::QueueJoin => {
+            if state.draining.is_cancelled() {
+                conn.send(ServerMsg::Restarting);
+                conn.send(ServerMsg::QueueLeft);
+                return;
+            }
             if state.hub.seat(user.id).is_some() {
                 conn.send(error(ErrorCode::AlreadyInMatch, "finish your match first"));
                 return;
@@ -225,8 +233,13 @@ async fn on_message(state: &AppState, user: &User, conn: &Conn, text: &str) {
                 ));
                 return;
             }
-            state.matchmaker.join(user.id, fresh.rating);
+            // `Queued` goes first so that a `QueueLeft` from a shutdown always follows it.
             conn.send(ServerMsg::Queued);
+            if !state.matchmaker.join(user.id, fresh.rating) {
+                // A shutdown began while we looked the user up.
+                conn.send(ServerMsg::Restarting);
+                conn.send(ServerMsg::QueueLeft);
+            }
         }
         ClientMsg::QueueLeave => {
             state.matchmaker.leave(user.id);

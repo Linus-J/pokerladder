@@ -83,7 +83,7 @@
           <button
             type="button"
             class="primary big"
-            disabled={game.status !== 'online' || mustVerify}
+            disabled={game.status !== 'online' || mustVerify || game.restarting}
             onclick={() => game.joinQueue()}
           >
             Find a match

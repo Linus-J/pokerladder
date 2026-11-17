@@ -66,6 +66,11 @@ impl Hub {
         self.inner.lock().unwrap().conns.get(&user).cloned()
     }
 
+    /// Every live connection.
+    pub fn conns(&self) -> Vec<Conn> {
+        self.inner.lock().unwrap().conns.values().cloned().collect()
+    }
+
     /// Seats `users[i]` in seat `i`. Fails (changing nothing) if either is already
     /// seated. Returns their current connections.
     pub fn seat_players(

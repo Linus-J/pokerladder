@@ -310,9 +310,16 @@ privacy notice (draft in the app) and the competition terms (not yet written).
 
 ### 5. Prizes
 - **Model: free entry, sponsor-funded prize.** No payment of any kind is required to
-  play or to qualify, which keeps it away from paid-entry gaming under the UK Gambling
-  Act 2005. Still get a quick sign-off from a gambling solicitor before the first payout,
-  and publish clear competition terms (eligibility, tie-breaks, payout method).
+  play or to qualify.
+- **Correction (Nov 2026): free entry alone is not enough.** Under the Gambling Act 2005
+  s6(4)(b) a person plays a game of chance "for a prize" whether or not they risk
+  anything, and a prize is "money or money's worth" (s6(5)), which includes gift
+  cards, vouchers and crypto. Poker counts as a game of chance (s6(2)(a)). Providing
+  facilities for that needs a licence (s33), and s36(3) applies because the server is
+  in Great Britain. The free-entry rule (Sch 2 para 8) only applies to lotteries and
+  prize draws. **No prize with a money value until a solicitor confirms a model.**
+  Recognition-only prizes (titles, hall of fame) are fine now. Draft terms with the
+  options and questions for the solicitor: `docs/competition-terms-draft.md`.
 - Paid buy-ins remain out of scope (would need a Gambling Commission licence).
 
 ## Open decisions

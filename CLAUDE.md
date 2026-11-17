@@ -9,7 +9,9 @@ live in `docs/ROADMAP.md` (read it first). `legacy/` is the retired C# P2P clien
 ```
 crates/engine   pure game logic, no I/O (Phase 1, done)
   src/card.rs        Card (u8 index rank*4+suit), CardSet, Deck (CSPRNG-only shuffle)
-  src/eval/          direct evaluator + Two Plus Two lookup table (HandRank 1..=7462)
+  src/eval/          direct evaluator + Two Plus Two lookup table (HandRank 1..=7462);
+                     equity.rs: exact equity vs a known hand / vs a random hand
+                     (preflop classes precomputed in preflop_vs_random.in)
   src/holdem.rs      one heads-up NLHE hand as a state machine (Hand, Action, Event)
   src/sng.rs         sit-and-go match: blind schedule, button, time bank (Match)
   src/history.rs     PokerStars-style hand histories (Player/Spectator/Audit views)
@@ -21,11 +23,15 @@ crates/server   authoritative game server: axum + tokio + sqlx/Postgres (Phase 2
   src/matchmaking.rs rating-window queue; `start_match` spawns the actor
   src/db.rs          Postgres queries; `PgStore` (hands + result/rating transaction)
   src/rating.rs      Glicko-2 (pure), season constants (20 to qualify, 3 rated per pair per day)
+  src/integrity/     chip-dumping report over hands.audit_events (Phase 4b):
+                     hand.rs (events -> facts), mod.rs (signals, baselines, render),
+                     stats.rs, load.rs (Postgres); src/bin/integrity.rs is the CLI
   src/protocol.rs    WebSocket message types; `export_bindings` test writes
                      web/src/lib/protocol.ts (ts-rs)
   migrations/        sqlx migrations (embedded, run at startup)
 deploy/home/     production on the owner's PC: update.sh (deploy main), backup.sh,
-                 reset-ladder.sh (wipe ranks + history, keep accounts), README.md
+                 reset-ladder.sh (wipe ranks + history, keep accounts),
+                 integrity-report.sh (chip-dumping report), README.md
 web/            Svelte 5 + Vite + TypeScript SPA (Phase 3)
   src/lib/table.ts       pure reducer: server messages -> table state (unit-tested)
   src/lib/game.svelte.ts session + WebSocket (reconnects), app-wide state
@@ -51,7 +57,12 @@ web/            Svelte 5 + Vite + TypeScript SPA (Phase 3)
   fixture: `UPDATE_FIXTURE=1 cargo test -p pokerladder-server --test client_fixture`.
 - `cargo test -q -p pokerladder-engine --test evaluator -- --ignored` — exhaustive
   133M-hand table-vs-direct check (~25 s).
-- `cargo bench -p pokerladder-engine` — criterion evaluator benchmarks.
+- `cargo test -q --release -p pokerladder-engine --lib preflop_table_is_exact -- --ignored`
+  — recomputes the 169-class preflop equity table (~3.5 min on 16 threads;
+  `UPDATE_PREFLOP=1` rewrites it).
+- `cargo run -p pokerladder-server --bin integrity -- [--season YYYY-MM] [--all]` —
+  chip-dumping report (read-only); production: `deploy/home/integrity-report.sh`.
+- `cargo bench -p pokerladder-engine` — criterion evaluator and equity benchmarks.
 - `cargo clippy -q --all-targets` and `cargo fmt` must be clean before committing.
 
 ## Engine contracts the server must respect

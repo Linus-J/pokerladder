@@ -10,6 +10,7 @@
 //!   This is what the game uses via [`evaluate`].
 
 pub mod direct;
+pub mod equity;
 pub mod twoplustwo;
 
 use std::fmt;

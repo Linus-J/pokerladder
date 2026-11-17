@@ -103,8 +103,11 @@ season standings and the repeat-opponent cap; ratings were reset to 1500 when it
 deployed. `deploy/home/reset-ladder.sh` wipes ranks and match history (keeping
 accounts) to test the rating system from scratch.
 
-**Next: Phase 4b** (integrity), planned below under Phase 4. Start a branch
-`phase-4b-integrity` from `main`.
+**Phase 4b** (integrity) is on branch `phase-4b-integrity`: a read-only
+chip-dumping report (`deploy/home/integrity-report.sh`). The owner chose a CLI report
+over an admin page, and no IP/device collection (manual identity check before any
+payout instead), so the privacy notice is unchanged. **Next:** competition terms and
+the payout process (Phase 5), with the solicitor review.
 
 **Before a public launch (needs the owner):** an SMTP provider and DNS (SPF/DKIM)
 for the sending domain; a host + domain + TLS reverse proxy; solicitor review of the
@@ -246,29 +249,64 @@ privacy notice (draft in the app) and the competition terms (not yet written).
       later ones are played unrated and the table says so before the first hand.
 - [x] `deploy/home/reset-ladder.sh`: wipe matches, hands, seasons and ratings
       (accounts stay), with a backup first; refuses while a match is running.
-- [ ] **4b. Chip-dumping heuristics** over the audit log, as reports for a person to
-      review before any payout (no automatic bans). The data is there already:
-      `hands.audit_events` is the unfiltered `WireEvent` stream as JSON (hole cards
-      of both players, every action, board, showdown), per hand, with
-      `matches` giving the pair, winner, season and `rated`. Candidate signals,
-      each computed per player pair and season:
-      - folds of strong hands facing a bet (e.g. preflop top ~10%, or a made
-        hand that was ahead on the river) at a rate far above the player's own
-        rate against everyone else;
-      - big all-ins or calls with very weak hands that lose to that one opponent;
-      - match length and chip flow: very short matches, or one player losing to
-        the same opponent much more than their rating predicts;
-      - how often the pair meets (the cap limits rated games, not meetings).
-      Equity needs the evaluator: reuse `pokerladder_engine::eval` (an
-      equity-vs-known-hand helper may be needed; benchmark it).
-      Output to decide with the owner: a CLI report
-      (`cargo run -p pokerladder-server --bin integrity -- --season 2026-11`)
-      is the cheapest start; a stored `integrity_flags` table plus an admin page
-      needs an admin role, which doesn't exist yet. Test each signal with
-      planted dumping matches built from engine hands (mutation-test them).
-- [ ] **One account per person**: an identity check before any payout (manual).
-      Detecting multi-accounting from IPs or devices means storing them, which
-      changes the privacy notice: ask the owner before collecting anything new.
+- [x] **4b. Chip-dumping report** (`crates/server/src/integrity/`, CLI
+      `--bin integrity -- [--season YYYY-MM] [--all]`, production wrapper
+      `deploy/home/integrity-report.sh`). Read-only, for a person to review before any
+      payout; no automatic bans. Reads `hands.audit_events` (both players' hole cards)
+      for one season: a match belongs to the season it was rated in, else the UTC
+      month it started. For each ordered pair "P may be dumping to O":
+      - **strong folds**: hands where P faced a bet holding a strong hand (preflop top
+        10% of combinations; postflop ≥ 80% equity against a random holding), and how
+        many P folded. Folds the server made for a player who timed out or sat out
+        are kept apart and listed on their own line (a disconnect isn't a choice,
+        though sitting out could be a way to dump);
+      - **weak big commitments**: P's first action whose voluntary chips (blinds
+        excluded, so a short stack's forced call isn't one) reach ≥ 50% of their
+        starting stack, and how many were with a weak hand (preflop bottom 30%;
+        postflop < 30% against a random holding);
+      - **results**: P's rated wins against O vs the Elo expectation from the stored
+        season ratings (z-score; flags at z ≤ -3).
+      Strength is always against a *random* holding, never the opponent's actual
+      cards (nobody can see those). Each rate is tested against P's own rate against
+      everyone else, shrunk towards the population rate (without the pair under test)
+      by 10 pseudo-hands (a second account with little other play gets compared with
+      everyone; the population rate is a Jeffreys estimate, never exactly 0). The
+      test is an exact beta-binomial tail: the baseline is a Beta distribution with
+      that mean whose spread reflects how few hands stand behind it, so a thin
+      baseline (0 of 30) can't make 3 events look impossible. A flag needs ≥ 3
+      events and p < 0.001. Per pair: short matches (≤ 5 hands) tested against each
+      player's own short-match record, keeping the more lenient result, and a
+      note (not a flag) for pairs that met ≥ 10 times and make up half of either
+      player's matches: in a small ladder, matchmaking alone does that. Flagged pairs
+      list example hands with ids, the board, pot odds, strength, and equity against
+      the cards the opponent actually held. Hands are treated as independent, which
+      they aren't quite, so p-values rank leads; they don't prove anything.
+      **Tests**: a seeded bot population played through the real engine (honest
+      players, a maniac who shoves every hand, a dumper who folds to and shoves trash
+      into one partner, and one who times out every decision against one opponent);
+      across 3 seeds only the dumper is flagged (e.g. strong folds 21/21 against
+      0/31 vs others); a dumper who dumps on only half their decisions is still
+      flagged on 3 more seeds; the maniac and the absent player aren't; an
+      all-honest season flags nothing; hand-built event sequences pin the
+      bookkeeping (timeouts, blinds, pot odds); synthetic matches show the results
+      and short-match flags firing; the Postgres round-trip gives the same report.
+      Mutation-tested: 8 planted bugs (opponent's cards for strength, wrong amount
+      to call, pair in its own baseline, swapped seats, timeouts ignored, blinds
+      counted as voluntary, rating index swapped, short-match baseline min instead of
+      max) each fail a test. The CLI's database session is read-only.
+      **Equity** (`engine::eval::equity`): exact `vs_hand` and `vs_random` by
+      enumeration on the 2+2 table (runouts outer, opponent holdings inner, so each
+      board is walked once). Preflop `vs_random` reads a precomputed 169-class table
+      (`preflop_vs_random.in`, exact counts; an `--ignored` test recomputes it in
+      ~4 min on 16 threads). Checked against brute force with the direct evaluator
+      on every street. Criterion, one call: `vs_random` preflop 18 ns, flop 3.2 ms
+      (1.07 M showdowns, ~340 M/s), turn 73 µs, river 1.8 µs; `vs_hand` preflop
+      6.4 ms (1.7 M runouts), flop 2.4 µs. A report costs ~3 ms per distinct
+      (seat, flop) where that player faced a bet (cached per street within a hand),
+      single-threaded; if seasons get big, analyse matches in parallel.
+- [x] **One account per person**: owner decision 2026-11-17: no IP or device
+      collection; an identity check (manual) before any payout. Revisit only with a
+      privacy-notice change.
 
 ### 5. Prizes
 - **Model: free entry, sponsor-funded prize.** No payment of any kind is required to

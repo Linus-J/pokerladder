@@ -191,7 +191,12 @@ class Game {
         // A fresh server (or this one, if it is still draining: `restarting` follows).
         this.restarting = false
         if (session.me) {
-          session.me = { ...session.me, rating: msg.rating, email_verified: msg.email_verified }
+          session.me = {
+            ...session.me,
+            rating: msg.rating,
+            season_matches: msg.season_matches,
+            email_verified: msg.email_verified,
+          }
         }
         // The match ended while we were disconnected: its result will be in History.
         // (In a rare race a new match's snapshot can overtake the hello; keep it.)
@@ -221,9 +226,26 @@ class Game {
         break
       case 'match_ended':
         if (this.table?.matchId === msg.match_id) {
-          this.table = { ...this.table, winner: msg.winner, result: msg.ratings, turn: null }
+          this.table = {
+            ...this.table,
+            winner: msg.winner,
+            rated: msg.rated,
+            result: msg.ratings,
+            resultSaved: true,
+            turn: null,
+          }
           const mine = msg.ratings?.[this.table.mySeat]
-          if (mine && session.me) session.me = { ...session.me, rating: mine.after }
+          if (mine && session.me) {
+            session.me = { ...session.me, rating: mine.after }
+            // The match count (and, across midnight on the 1st, the season) come from
+            // the server rather than being worked out here.
+            api.me().then(
+              (me) => {
+                if (session.me?.id === me.id) session.me = me
+              },
+              () => {},
+            )
+          }
         }
         break
       case 'error':

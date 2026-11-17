@@ -184,6 +184,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/logout", post(auth::logout))
         .route("/api/me", get(auth::me))
         .route("/api/leaderboard", get(leaderboard))
+        .route("/api/seasons", get(seasons))
         .route("/api/matches", get(history::matches))
         .route("/api/matches/{id}/hands", get(history::hands))
         .route("/api/{*rest}", any(|| async { StatusCode::NOT_FOUND }))
@@ -231,8 +232,31 @@ pub fn router(state: AppState) -> Router {
     app
 }
 
+#[derive(serde::Deserialize)]
+struct SeasonQuery {
+    season: Option<String>,
+}
+
+/// A season's standings: `?season=YYYY-MM`, or the current season.
 async fn leaderboard(
     State(state): State<AppState>,
-) -> Result<axum::Json<Vec<db::LeaderboardRow>>, auth::ApiError> {
-    Ok(axum::Json(db::leaderboard(&state.db, 100).await?))
+    axum::extract::Query(q): axum::extract::Query<SeasonQuery>,
+) -> Result<axum::Json<db::Standings>, auth::ApiError> {
+    if let Some(s) = &q.season
+        && !db::is_season(s)
+    {
+        return Err(auth::ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "seasons look like 2026-11",
+        ));
+    }
+    Ok(axum::Json(
+        db::standings(&state.db, q.season.as_deref(), 100).await?,
+    ))
+}
+
+/// Seasons with any rated match, newest first (always including the current one).
+async fn seasons(State(state): State<AppState>) -> Result<axum::Json<Vec<String>>, auth::ApiError> {
+    Ok(axum::Json(db::seasons(&state.db).await?))
 }

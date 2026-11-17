@@ -28,6 +28,7 @@ function empty(g: Game): TableState {
       seat: g.seat,
       names: g.names,
       ratings: [1500, 1500],
+      rated: true,
       hands_played: 0,
       stacks: [1500, 1500],
       time_banks_ms: [0, 0],

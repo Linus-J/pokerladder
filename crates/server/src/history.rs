@@ -21,6 +21,12 @@ pub struct MatchSummary {
     pub status: String,
     /// `None` unless finished.
     pub won: Option<bool>,
+    /// False if the match didn't count (the pair's daily quota was used up).
+    pub rated: bool,
+    /// The season it counted towards (`YYYY-MM`), once finished. `None` for
+    /// unrated matches and for beta matches from before seasons began.
+    pub season: Option<String>,
+    /// Season ratings, for rated matches (beta matches: the old Elo ratings).
     pub rating_before: Option<f64>,
     pub rating_after: Option<f64>,
     pub hands_played: Option<i32>,
@@ -49,6 +55,8 @@ type SummaryRow = (
     String,
     String,
     Option<bool>,
+    bool,
+    Option<String>,
     Option<f64>,
     Option<f64>,
     Option<i32>,
@@ -64,6 +72,7 @@ pub async fn list_matches(
         "SELECT m.id, u.name, m.status,
                 CASE WHEN m.winner_seat IS NULL THEN NULL
                      ELSE m.winner_seat = (CASE WHEN m.player0 = $1 THEN 0 ELSE 1 END) END,
+                m.rated, m.season,
                 CASE WHEN m.player0 = $1 THEN m.rating_before0 ELSE m.rating_before1 END,
                 CASE WHEN m.player0 = $1 THEN m.rating_after0 ELSE m.rating_after1 END,
                 m.hands_played, m.started_at
@@ -80,12 +89,25 @@ pub async fn list_matches(
     Ok(rows
         .into_iter()
         .map(
-            |(id, opponent, status, won, rating_before, rating_after, hands_played, started_at)| {
+            |(
+                id,
+                opponent,
+                status,
+                won,
+                rated,
+                season,
+                rating_before,
+                rating_after,
+                hands_played,
+                started_at,
+            )| {
                 MatchSummary {
                     id,
                     opponent,
                     status,
                     won,
+                    rated,
+                    season,
                     rating_before,
                     rating_after,
                     hands_played,

@@ -80,7 +80,11 @@ pub struct MatchSetup {
     pub match_id: MatchId,
     /// Indexed by seat.
     pub names: [String; 2],
+    /// Season ratings, shown to the players.
     pub ratings: [f64; 2],
+    /// Whether the result counts (false once a pair has played its daily quota of
+    /// rated matches; see `db::create_match`).
+    pub rated: bool,
     pub config: MatchConfig,
     pub first_button: Seat,
     pub timing: Timing,
@@ -106,11 +110,12 @@ pub struct MatchFinish {
 /// in-memory one.
 pub trait MatchStore: Send + Sync + 'static {
     fn record_hand(&self, hand: &HandRecord) -> impl Future<Output = anyhow::Result<()>> + Send;
-    /// Marks the match finished and updates both ratings in one transaction.
+    /// Marks the match finished and, if it is rated, updates both players' ratings in
+    /// the same transaction. Returns the season rating changes (`None` if unrated).
     fn finish_match(
         &self,
         result: &MatchFinish,
-    ) -> impl Future<Output = anyhow::Result<[RatingChange; 2]>> + Send;
+    ) -> impl Future<Output = anyhow::Result<Option<[RatingChange; 2]>>> + Send;
 }
 
 /// Renders a hand's histories for seat 0, seat 1 and the audit view.
@@ -381,6 +386,7 @@ impl<S: MatchStore> Table<S> {
             seat: seat_u8(seat),
             names: self.setup.names.clone(),
             ratings: self.setup.ratings,
+            rated: self.setup.rated,
             hands_played: self.m.hands_played(),
             stacks: self.m.stacks(),
             time_banks_ms: self.m.time_banks().map(millis),
@@ -406,7 +412,7 @@ impl<S: MatchStore> Table<S> {
         for attempt in 0..5u32 {
             match self.store.finish_match(&result).await {
                 Ok(r) => {
-                    ratings = Some(r);
+                    ratings = r;
                     break;
                 }
                 Err(e) => {
@@ -425,6 +431,7 @@ impl<S: MatchStore> Table<S> {
                 ServerMsg::MatchEnded {
                     match_id: result.match_id,
                     winner: seat_u8(winner),
+                    rated: self.setup.rated,
                     ratings,
                 },
             );

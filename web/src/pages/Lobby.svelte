@@ -5,10 +5,11 @@
   import LeaderboardTable from '../components/LeaderboardTable.svelte'
   import { api } from '../lib/api'
   import { game, session } from '../lib/game.svelte'
-  import type { LeaderboardRow, MatchSummary } from '../lib/protocol'
+  import type { MatchSummary, Standings } from '../lib/protocol'
   import { link, router } from '../lib/router.svelte'
+  import { QUALIFYING_MATCHES, seasonName, seasonOf } from '../lib/season'
 
-  let board = $state<LeaderboardRow[] | null>(null)
+  let board = $state<Standings | null>(null)
   let boardFailed = $state(false)
   let recent = $state<MatchSummary[] | null>(null)
   let recentFailed = $state(false)
@@ -50,7 +51,6 @@
   const waited = $derived(Math.max(0, Math.floor((now - game.queuedAt) / 1000)))
   const inMatch = $derived(game.table !== null && game.table.winner === null)
   const mustVerify = $derived(!!me && me.verification_required && !me.email_verified)
-  const myRow = $derived(board?.find((r) => r.name === me?.name))
 
   async function resend() {
     resent = 'sending'
@@ -89,8 +89,14 @@
         <div class="block-body">
           <h1>Welcome back, {me.name}</h1>
           <p class="muted">
-            Your rating is <b class="num">{Math.round(me.rating)}</b>{#if myRow}, from {myRow.rated_matches}
-              rated {myRow.rated_matches === 1 ? 'match' : 'matches'}{/if}.
+            Your {seasonName(seasonOf(new Date(now)))} rating is <b class="num">{Math.round(me.rating)}</b>.
+            {#if me.season_matches >= me.qualifying_matches}
+              You're ranked, with {me.season_matches} rated matches this season.
+            {:else if me.season_matches === 0}
+              Play {me.qualifying_matches} rated matches this month to be ranked.
+            {:else}
+              {me.season_matches} of the {me.qualifying_matches} rated matches you need to be ranked this month.
+            {/if}
           </p>
 
           {#if mustVerify}
@@ -172,7 +178,7 @@
                     {:else}<span class="bad">Lost</span>{/if}
                   </td>
                   <td class="r num">
-                    {#if d !== null}<span class={d >= 0 ? 'good' : 'bad'}>{d >= 0 ? '+' : ''}{d.toFixed(1)}</span>{/if}
+                    {#if d !== null}<span class={d >= 0 ? 'good' : 'bad'}>{d >= 0 ? '+' : ''}{d.toFixed(1)}</span>{:else if m.status === 'finished' && !m.rated}<span class="muted">Unrated</span>{/if}
                   </td>
                 </tr>
               {/each}
@@ -194,9 +200,11 @@
         <dt>Opponents</dt>
         <dd>Chosen by the server from players near your rating. You can't pick.</dd>
         <dt>Rating</dt>
-        <dd>Everyone starts at 1500. Win and you take points from your opponent.</dd>
+        <dd>Everyone starts each month at 1500. Win and it goes up, lose and it goes down; upsets move it more.</dd>
+        <dt>Season</dt>
+        <dd>One calendar month. Play {QUALIFYING_MATCHES} rated matches to be ranked.</dd>
         <dt>Cost</dt>
-        <dd>Nothing. Seasons with sponsor-funded prizes are on the way.</dd>
+        <dd>Nothing, ever. Sponsor-funded prizes for the top of the season are on the way.</dd>
       </dl>
     </section>
   </div>
@@ -205,9 +213,9 @@
     <section class="block">
       <header>
         <Icon of={Trophy} /><h2>Leaderboard</h2>
-        <a class="aside" href="/leaderboard" onclick={link}>Top 100</a>
+        <a class="aside" href="/leaderboard" onclick={link}>Full standings</a>
       </header>
-      <LeaderboardTable rows={board} failed={boardFailed} limit={10} me={me?.name} />
+      <LeaderboardTable standings={board} failed={boardFailed} limit={10} compact me={me?.name} />
     </section>
   </aside>
 </div>

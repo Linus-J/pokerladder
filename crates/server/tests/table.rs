@@ -37,17 +37,16 @@ impl MatchStore for MemStore {
         Ok(())
     }
 
-    async fn finish_match(&self, r: &MatchFinish) -> anyhow::Result<[RatingChange; 2]> {
+    async fn finish_match(&self, r: &MatchFinish) -> anyhow::Result<Option<[RatingChange; 2]>> {
         self.finished
             .lock()
             .unwrap()
             .push((r.winner, r.hands_played));
-        let before = [1500.0, 1500.0];
-        let after = rating::update(before, r.winner.index());
-        Ok([0, 1].map(|i| RatingChange {
-            before: before[i],
-            after: after[i],
-        }))
+        let after = rating::match_result([rating::Glicko::NEW; 2], [0.0; 2], r.winner.index());
+        Ok(Some([0, 1].map(|i| RatingChange {
+            before: rating::INITIAL_RATING,
+            after: after[i].rating,
+        })))
     }
 }
 
@@ -59,6 +58,7 @@ fn setup() -> MatchSetup {
         match_id: 7,
         names: NAMES.map(String::from),
         ratings: [1500.0; 2],
+        rated: true,
         config: MatchConfig::standard(),
         first_button: Seat::Zero,
         timing: Timing::STANDARD,

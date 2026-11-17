@@ -111,7 +111,8 @@ async fn run(state: AppState, user: User, socket: WebSocket) {
     conn.send(ServerMsg::Hello {
         user_id: user.id,
         name: user.name.clone(),
-        rating: user.rating,
+        rating: user.season_rating,
+        season_matches: user.season_matches,
         email_verified: user.email_verified,
         in_match: seat.is_some(),
     });

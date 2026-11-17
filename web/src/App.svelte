@@ -254,9 +254,12 @@
     gap: var(--s1);
   }
   main {
+    /* Takes the spare height, pushing the footer down. Full width, because auto
+       side margins in a flex column would otherwise shrink it to its content. */
+    flex: 1 0 auto;
+    width: 100%;
     padding-top: var(--s5);
     padding-bottom: var(--s7);
-    min-height: 60vh;
   }
   .banner {
     background: var(--note-bg);

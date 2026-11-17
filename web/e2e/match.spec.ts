@@ -71,7 +71,7 @@ test('two players queue, play a match and see the result', async ({ browser }) =
 
   const headings = await Promise.all(result.map((r) => r.getByRole('heading').textContent()))
   expect(headings.sort()).toEqual(['You lost the match', 'You won the match'])
-  for (const r of result) await expect(r).toContainText(/Rating 1500 → (1516|1484)/)
+  for (const r of result) await expect(r).toContainText(/ rating 1500 → (1662|1338)/)
 
   // History shows the match from each side.
   const page = pages[0]
@@ -111,6 +111,17 @@ test('the information pages load and fit a phone', async ({ browser }) => {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
     expect(overflow, `${path} scrolls sideways`).toBe(false)
   }
+  // On a short page the footer still sits at the bottom of a tall window.
+  await page.setViewportSize({ width: 1200, height: 1600 })
+  for (const path of ['/', '/leaderboard', '/login']) {
+    await page.goto(path)
+    await expect(page.locator('main h1, main h2').first()).toBeVisible()
+    const gap = await page.evaluate(
+      () => innerHeight - document.querySelector('footer')!.getBoundingClientRect().bottom,
+    )
+    expect(gap, `${path}: footer floats ${gap}px above the bottom`).toBeLessThanOrEqual(1)
+  }
+  await page.setViewportSize({ width: 390, height: 844 })
   // In-page links reach their section, even from the same page.
   await page.goto('/about')
   await page.locator('footer').getByRole('link', { name: 'Fair play' }).click()

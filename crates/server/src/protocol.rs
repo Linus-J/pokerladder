@@ -41,7 +41,9 @@ pub enum ServerMsg {
         #[ts(type = "number")]
         user_id: UserId,
         name: String,
+        /// This season's rating, and rated matches played this season.
         rating: f64,
+        season_matches: i32,
         email_verified: bool,
         /// Whether the user is seated in a live match (a `MatchState` follows if so).
         /// A client still showing a table when this is false missed the match's end.
@@ -68,7 +70,10 @@ pub enum ServerMsg {
         #[ts(type = "number")]
         match_id: MatchId,
         winner: u8,
-        /// Indexed by seat; `None` if the result could not be recorded.
+        /// Whether the match counted (see [`MatchSnapshot::rated`]).
+        rated: bool,
+        /// Season ratings, indexed by seat; `None` if unrated or if the result
+        /// could not be recorded.
         ratings: Option<[RatingChange; 2]>,
     },
     /// A request was refused; nothing changed.
@@ -105,7 +110,11 @@ pub struct MatchSnapshot {
     pub seat: u8,
     /// Indexed by seat.
     pub names: [String; 2],
+    /// Season ratings when the match started.
     pub ratings: [f64; 2],
+    /// False if this match won't change ratings: the two players had already
+    /// played their daily quota of rated matches against each other.
+    pub rated: bool,
     pub hands_played: u32,
     #[ts(type = "[number, number]")]
     pub stacks: [u64; 2],
@@ -474,7 +483,8 @@ mod tests {
             WireEvent::decl(),
             crate::auth::MeResponse::decl(),
             crate::auth::RegisterResponse::decl(),
-            crate::db::LeaderboardRow::decl(),
+            crate::db::StandingRow::decl(),
+            crate::db::Standings::decl(),
             crate::history::MatchSummary::decl(),
             crate::history::HandHistory::decl(),
         ];
@@ -487,6 +497,14 @@ mod tests {
             out.push_str(&d);
             out.push('\n');
         }
+        out.push_str(&format!(
+            "\n/** Rated matches needed in a season to be ranked. */\n\
+             export const QUALIFYING_MATCHES = {};\n\
+             \n/** Rated matches the same two players can start in any 24 hours. */\n\
+             export const PAIR_DAILY_LIMIT = {};\n",
+            crate::rating::QUALIFYING_MATCHES,
+            crate::rating::PAIR_DAILY_LIMIT,
+        ));
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/src/lib/protocol.ts");
         let current = std::fs::read_to_string(path).unwrap_or_default();
         if current != out {

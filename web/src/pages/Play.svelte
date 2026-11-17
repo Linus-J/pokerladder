@@ -1,10 +1,13 @@
 <script lang="ts">
+  import { Info } from '@lucide/svelte'
   import { onMount } from 'svelte'
   import ActionBar from '../components/ActionBar.svelte'
   import Card from '../components/Card.svelte'
+  import Icon from '../components/Icon.svelte'
   import Seat from '../components/Seat.svelte'
   import { game } from '../lib/game.svelte'
   import { link, router } from '../lib/router.svelte'
+  import { PAIR_DAILY_LIMIT, seasonName, seasonOf } from '../lib/season'
   import { pot, remainingMs } from '../lib/table'
 
   const t = $derived(game.table)
@@ -91,6 +94,16 @@
         </label>
       </div>
 
+      {#if !t.rated}
+        <p class="note unrated" data-testid="unrated">
+          <Icon of={Info} />
+          <span>
+            <b>This match is unrated.</b> You two have already played {PAIR_DAILY_LIMIT} rated matches against
+            each other in the last 24 hours, so this one won't change either rating.
+          </span>
+        </p>
+      {/if}
+
       <div class="felt" data-testid="table">
         <div class="slot top">
           <Seat {...seatProps(opp)} />
@@ -149,9 +162,13 @@
           {#if r}
             {@const delta = r.after - r.before}
             <p class="rating num">
-              Rating {Math.round(r.before)} → <b>{Math.round(r.after)}</b>
+              {seasonName(seasonOf(new Date()))} rating {Math.round(r.before)} → <b>{Math.round(r.after)}</b>
               <span class={delta >= 0 ? 'good' : 'bad'}>({delta >= 0 ? '+' : ''}{delta.toFixed(1)})</span>
             </p>
+          {:else if !t.rated}
+            <p class="muted">Unrated, so ratings didn't change.</p>
+          {:else if t.resultSaved}
+            <p class="bad">The result couldn't be saved, so ratings didn't change.</p>
           {:else}
             <p class="muted">Saving the result and updating ratings...</p>
           {/if}

@@ -197,13 +197,18 @@ pub async fn start_match(state: AppState, mut users: [UserId; 2]) -> anyhow::Res
     if swap {
         users.swap(0, 1);
     }
-    let (match_id, names, ratings) = db::create_match(&state.db, users).await?;
+    let db::NewMatch {
+        id: match_id,
+        names,
+        ratings,
+        rated,
+    } = db::create_match(&state.db, users).await?;
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
     let Some(conns) = state.hub.seat_players(users, match_id, &cmd_tx) else {
         db::abandon_match(&state.db, match_id).await?;
         anyhow::bail!("a player was seated elsewhere in the meantime");
     };
-    tracing::info!(match_id, ?users, "match started");
+    tracing::info!(match_id, ?users, rated, "match started");
     for (seat, conn) in Seat::BOTH.into_iter().zip(conns) {
         if let Some(conn) = conn {
             let _ = cmd_tx.send(MatchCmd::Connect { seat, conn }).await;
@@ -214,6 +219,7 @@ pub async fn start_match(state: AppState, mut users: [UserId; 2]) -> anyhow::Res
         match_id,
         names,
         ratings,
+        rated,
         config: state.match_config.clone(),
         first_button,
         timing: state.timing,

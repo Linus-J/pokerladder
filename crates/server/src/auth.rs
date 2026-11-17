@@ -229,7 +229,12 @@ pub struct MeResponse {
     #[ts(type = "number")]
     pub id: i64,
     pub name: String,
+    /// This season's rating.
     pub rating: f64,
+    /// Rated matches played this season, and how many qualify a player for the
+    /// standings.
+    pub season_matches: i32,
+    pub qualifying_matches: i32,
     pub email_verified: bool,
     /// Whether this server only lets verified accounts queue.
     pub verification_required: bool,
@@ -239,7 +244,9 @@ fn me_response(state: &AppState, u: User) -> MeResponse {
     MeResponse {
         id: u.id,
         name: u.name,
-        rating: u.rating,
+        rating: u.season_rating,
+        season_matches: u.season_matches,
+        qualifying_matches: crate::rating::QUALIFYING_MATCHES,
         email_verified: u.email_verified,
         verification_required: state.config.require_email_verification,
     }

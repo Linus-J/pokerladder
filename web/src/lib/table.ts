@@ -35,6 +35,8 @@ export interface TableState {
   mySeat: number
   names: Pair<string>
   ratings: Pair<number>
+  /** False if the result won't change ratings (the pair's daily quota is used up). */
+  rated: boolean
   handsPlayed: number
   /** Stacks between hands (the current hand's are in `hand`). */
   stacks: Pair<number>
@@ -47,6 +49,8 @@ export interface TableState {
   log: string[]
   winner: number | null
   result: Pair<RatingChange> | null
+  /** Whether the server has said how the match was recorded (`match_ended`). */
+  resultSaved: boolean
   /** This player's auto-muck setting (takes effect from the next hand). */
   autoMuck: boolean
 }
@@ -71,6 +75,7 @@ export function fromSnapshot(s: MatchSnapshot, now: number): TableState {
     mySeat: s.seat,
     names: s.names,
     ratings: s.ratings,
+    rated: s.rated,
     handsPlayed: s.hands_played,
     stacks: s.stacks,
     timeBanksMs: s.time_banks_ms,
@@ -81,6 +86,7 @@ export function fromSnapshot(s: MatchSnapshot, now: number): TableState {
     log: [],
     winner: s.winner,
     result: null,
+    resultSaved: false,
     autoMuck: s.auto_muck,
   }
   if (s.hand) {

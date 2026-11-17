@@ -1,6 +1,7 @@
 //! Match actor tests: an in-memory store and tokio's paused clock, so timers are exact
 //! and whole matches run in milliseconds.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,10 +25,27 @@ type StoredHand = (u32, Vec<WireEvent>, [String; 3]);
 struct MemStore {
     hands: Mutex<Vec<StoredHand>>,
     finished: Mutex<Vec<(Seat, u32)>>,
+    /// While set, every write fails (a database outage).
+    down: AtomicBool,
+    /// While set, finishing fails with an error retrying can't fix.
+    broken: AtomicBool,
+    /// While set, recording a hand fails with an error retrying can't fix.
+    hands_broken: AtomicBool,
+}
+
+impl MemStore {
+    fn check(&self) -> anyhow::Result<()> {
+        if self.down.load(Ordering::SeqCst) {
+            return Err(sqlx::Error::PoolTimedOut.into());
+        }
+        Ok(())
+    }
 }
 
 impl MatchStore for MemStore {
     async fn record_hand(&self, hand: &HandRecord) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.hands_broken.load(Ordering::SeqCst), "bad hand");
+        self.check()?;
         let histories = render_histories(hand.number as u64, hand)?;
         let events = hand.events.iter().map(WireEvent::from).collect();
         self.hands
@@ -38,6 +56,11 @@ impl MatchStore for MemStore {
     }
 
     async fn finish_match(&self, r: &MatchFinish) -> anyhow::Result<Option<[RatingChange; 2]>> {
+        self.check()?;
+        anyhow::ensure!(
+            !self.broken.load(Ordering::SeqCst),
+            "match is not in progress"
+        );
         self.finished
             .lock()
             .unwrap()
@@ -461,6 +484,118 @@ async fn an_absent_player_sits_out_and_never_wins() {
     let elapsed = start.elapsed();
     let bound = Duration::from_secs(75 + 3 + 5 * hands as u64);
     assert!(elapsed < bound, "took {elapsed:?} for {hands} hands");
+}
+
+/// The database is down for a whole match: every hand and the result miss their quick
+/// retries and come back as pending; once the database returns, `settle` stores every
+/// hand once, in order, and the result once.
+#[tokio::test(start_paused = true)]
+async fn a_database_outage_loses_nothing() {
+    let store = Arc::new(MemStore::default());
+    store.down.store(true, Ordering::SeqCst);
+    let (cmd, task) = spawn_match(&store);
+    let outcome = task.await.unwrap();
+    drop(cmd);
+    assert!(outcome.ratings.is_none(), "nothing could be recorded");
+    let pending = outcome.pending;
+    let hands = pending.hands.len();
+    assert!(hands > 0);
+    let numbers: Vec<u32> = pending.hands.iter().map(|h| h.number).collect();
+    assert_eq!(numbers, (1..=hands as u32).collect::<Vec<_>>());
+    let f = pending.finish.as_ref().expect("the result is pending");
+    assert_eq!((f.winner, f.hands_played), (outcome.winner, hands as u32));
+    assert!(store.hands.lock().unwrap().is_empty());
+
+    let settling = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move { table::settle(&*store, pending).await })
+    };
+    tokio::time::sleep(Duration::from_secs(300)).await;
+    assert!(
+        !settling.is_finished(),
+        "keeps trying while the database is down"
+    );
+    store.down.store(false, Ordering::SeqCst);
+    // Back-off is capped at a minute.
+    tokio::time::timeout(Duration::from_secs(61), settling)
+        .await
+        .expect("settles within a minute of the database returning")
+        .unwrap();
+    let stored: Vec<u32> = store.hands.lock().unwrap().iter().map(|h| h.0).collect();
+    assert_eq!(stored, (1..=hands as u32).collect::<Vec<_>>());
+    assert_eq!(
+        *store.finished.lock().unwrap(),
+        vec![(outcome.winner, hands as u32)]
+    );
+}
+
+/// An error retrying can't fix: `settle` stops at once instead of retrying for hours
+/// (and holding a graceful shutdown for its whole drain timeout).
+#[tokio::test(start_paused = true)]
+async fn settle_stops_on_a_permanent_error() {
+    let store = Arc::new(MemStore::default());
+    store.down.store(true, Ordering::SeqCst);
+    let (cmd, task) = spawn_match(&store);
+    let outcome = task.await.unwrap();
+    drop(cmd);
+    store.down.store(false, Ordering::SeqCst);
+    store.broken.store(true, Ordering::SeqCst);
+    let started = Instant::now();
+    table::settle(&*store, outcome.pending).await;
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(store.finished.lock().unwrap().is_empty());
+    // The hands still got stored in that one round.
+    assert!(!store.hands.lock().unwrap().is_empty());
+}
+
+/// Hands that can never be stored are dropped, but the result, which is only waiting
+/// for the database, is still kept and stored once it returns.
+#[tokio::test(start_paused = true)]
+async fn a_bad_hand_does_not_cost_the_result() {
+    let store = Arc::new(MemStore::default());
+    store.down.store(true, Ordering::SeqCst);
+    let (cmd, task) = spawn_match(&store);
+    let outcome = task.await.unwrap();
+    drop(cmd);
+    store.hands_broken.store(true, Ordering::SeqCst);
+    let settling = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move { table::settle(&*store, outcome.pending).await })
+    };
+    tokio::time::sleep(Duration::from_secs(120)).await;
+    assert!(!settling.is_finished());
+    store.down.store(false, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(61), settling)
+        .await
+        .expect("settles once the database returns")
+        .unwrap();
+    assert_eq!(store.finished.lock().unwrap().len(), 1);
+    assert!(store.hands.lock().unwrap().is_empty());
+}
+
+#[test]
+fn transient_errors_are_told_apart() {
+    assert!(table::is_transient(&sqlx::Error::PoolTimedOut.into()));
+    let wrapped = anyhow::Error::from(sqlx::Error::PoolClosed).context("finishing match");
+    assert!(table::is_transient(&wrapped));
+    assert!(!table::is_transient(&sqlx::Error::RowNotFound.into()));
+    assert!(!table::is_transient(&anyhow::anyhow!("rating not finite")));
+}
+
+/// An outage that never ends: `settle` gives up after `SETTLE_FOR` instead of
+/// retrying forever.
+#[tokio::test(start_paused = true)]
+async fn settle_gives_up_eventually() {
+    let store = Arc::new(MemStore::default());
+    store.down.store(true, Ordering::SeqCst);
+    let (cmd, task) = spawn_match(&store);
+    let outcome = task.await.unwrap();
+    drop(cmd);
+    let started = Instant::now();
+    table::settle(&*store, outcome.pending).await;
+    let took = started.elapsed();
+    assert!(took >= table::SETTLE_FOR && took < table::SETTLE_FOR + Duration::from_secs(61));
+    assert!(store.finished.lock().unwrap().is_empty());
 }
 
 #[tokio::test(start_paused = true)]

@@ -27,10 +27,25 @@ async fn main() -> anyhow::Result<()> {
 
     let db = sqlx::postgres::PgPoolOptions::new()
         .max_connections(20)
+        // Fail fast while the database is down (the default waits 30 s per query);
+        // matches retry what they couldn't store.
+        .acquire_timeout(std::time::Duration::from_secs(5))
         .connect(&config.database_url)
         .await
         .context("connecting to Postgres")?;
     db::MIGRATOR.run(&db).await.context("running migrations")?;
+    // Matches that were decided but whose result was never stored are finished from
+    // their audit log; only the rest are abandoned.
+    match db::recover_decided_matches(&db).await {
+        Ok(r) if r.is_empty() => {}
+        Ok(r) => tracing::warn!(recovered = ?r, "finished decided matches from their audit log"),
+        // A passing database hiccup: fail startup (systemd restarts us) rather than
+        // abandon matches that could have been recovered.
+        Err(e) if pokerladder_server::table::is_transient(&e) => {
+            return Err(e.context("recovering decided matches"));
+        }
+        Err(e) => tracing::error!("couldn't recover decided matches: {e:#}"),
+    }
     let abandoned = db::abandon_unfinished_matches(&db).await?;
     if abandoned > 0 {
         tracing::warn!(abandoned, "marked matches from a previous run as abandoned");

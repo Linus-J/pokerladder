@@ -19,7 +19,8 @@ in_match: boolean, } | { "type": "queued" } | { "type": "queue_left" } | { "type
 rated: boolean, 
 /**
  * Season ratings, indexed by seat; `None` if unrated or if the result
- * could not be recorded.
+ * couldn't be recorded yet (the server keeps retrying; standings update
+ * once it is).
  */
 ratings: [RatingChange, RatingChange] | null, } | { "type": "error", code: ErrorCode, message: string, } | { "type": "replaced" } | { "type": "restarting" };
 

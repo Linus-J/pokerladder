@@ -230,7 +230,20 @@ pub async fn start_match(state: AppState, mut users: [UserId; 2]) -> anyhow::Res
     let outcome = actor.await;
     state.hub.unseat(users, match_id);
     match outcome {
-        Ok(o) => tracing::info!(match_id, winner = ?o.winner, "match finished"),
+        Ok(o) => {
+            tracing::info!(match_id, winner = ?o.winner, "match finished");
+            if !o.pending.is_empty() {
+                // The players are free already; this task (tracked, so a graceful
+                // shutdown waits for it) keeps storing what the match couldn't.
+                tracing::warn!(
+                    match_id,
+                    hands = o.pending.hands.len(),
+                    result = o.pending.finish.is_some(),
+                    "storing the rest of the match in the background"
+                );
+                table::settle(&*state.store, o.pending).await;
+            }
+        }
         Err(e) => {
             tracing::error!(match_id, "match actor failed: {e}");
             db::abandon_match(&state.db, match_id).await?;

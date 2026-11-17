@@ -141,6 +141,117 @@ pub fn render_histories(hand_id: u64, rec: &HandRecord) -> anyhow::Result<[Strin
 pub struct MatchOutcome {
     pub winner: Seat,
     pub ratings: Option<[RatingChange; 2]>,
+    /// What the match couldn't store despite retrying (e.g. the database was down).
+    /// The caller hands it to [`settle`] once the players are free again.
+    pub pending: Pending,
+}
+
+/// Hands and/or a result still to be stored.
+#[derive(Default)]
+pub struct Pending {
+    pub hands: Vec<HandRecord>,
+    pub finish: Option<MatchFinish>,
+}
+
+impl Pending {
+    pub fn is_empty(&self) -> bool {
+        self.hands.is_empty() && self.finish.is_none()
+    }
+}
+
+/// How long [`settle`] keeps trying before giving up (a failure that outlasts this
+/// is not a blip; startup recovery may still finish the match from its audit log).
+pub const SETTLE_FOR: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Whether an error from a store might go away if retried: the database being
+/// unreachable, restarting or overloaded, or a transaction conflict. Anything else
+/// (a constraint violation, a match no longer in progress, a broken invariant) would
+/// fail the same way forever.
+pub fn is_transient(e: &anyhow::Error) -> bool {
+    let Some(e) = e.chain().find_map(|c| c.downcast_ref::<sqlx::Error>()) else {
+        return false;
+    };
+    match e {
+        sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::WorkerCrashed => true,
+        // SQLSTATE classes: 08 connection exception, 40 transaction rollback
+        // (serialization failure, deadlock), 53 insufficient resources, 57 operator
+        // intervention (e.g. the server is shutting down).
+        sqlx::Error::Database(d) => d
+            .code()
+            .is_some_and(|c| ["08", "40", "53", "57"].iter().any(|p| c.starts_with(p))),
+        _ => false,
+    }
+}
+
+/// Keeps storing what a match couldn't, backing off from 1 s to at most a minute
+/// between rounds, until everything is stored, [`SETTLE_FOR`] has passed, or an
+/// error that retrying can't fix (see [`is_transient`]) turns up. Storing is
+/// idempotent (hands are keyed by match and number; finishing a finished match
+/// returns its recorded ratings), so retrying something that did reach the database
+/// is harmless. The players were already told the result isn't saved yet; the
+/// standings pick it up once it is.
+pub async fn settle<S: MatchStore>(store: &S, mut p: Pending) {
+    let Some(match_id) = p
+        .finish
+        .as_ref()
+        .map(|f| f.match_id)
+        .or(p.hands.first().map(|h| h.match_id))
+    else {
+        return;
+    };
+    let started = Instant::now();
+    let mut delay = Duration::from_secs(1);
+    loop {
+        // Each item is dropped only when its own error can't be fixed by retrying, so
+        // one bad hand doesn't cost the result (or the other hands).
+        let mut left = Vec::new();
+        for hand in std::mem::take(&mut p.hands) {
+            if let Err(e) = store.record_hand(&hand).await {
+                let hand_no = hand.number;
+                if is_transient(&e) {
+                    tracing::warn!(match_id, hand = hand_no, "still can't record hand: {e:#}");
+                    left.push(hand);
+                } else {
+                    tracing::error!(match_id, hand = hand_no, "giving up on hand: {e:#}");
+                }
+            }
+        }
+        p.hands = left;
+        if let Some(f) = &p.finish {
+            match store.finish_match(f).await {
+                Ok(_) => {
+                    tracing::info!(match_id, "late match result recorded");
+                    p.finish = None;
+                }
+                Err(e) if is_transient(&e) => {
+                    tracing::warn!(match_id, "still can't finish match: {e:#}");
+                }
+                Err(e) => {
+                    tracing::error!(match_id, "giving up on the match result: {e:#}");
+                    p.finish = None;
+                }
+            }
+        }
+        if p.is_empty() {
+            return;
+        }
+        if started.elapsed() < SETTLE_FOR {
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_secs(60));
+            continue;
+        }
+        tracing::error!(
+            match_id,
+            hands = p.hands.len(),
+            result = p.finish.is_some(),
+            "giving up on storing a match's data: out of time"
+        );
+        return;
+    }
 }
 
 struct Table<S> {
@@ -156,10 +267,13 @@ struct Table<S> {
     /// The current hand's unfiltered events.
     hand_log: Vec<MatchEvent>,
     hand_started_at: OffsetDateTime,
+    /// Finished hands that couldn't be stored yet (kept for [`settle`]).
+    unrecorded: Vec<HandRecord>,
 }
 
 /// Plays the match to the end, then records the result. Returns once the result is
-/// recorded (or recording has failed for good).
+/// recorded or a few quick retries have failed; anything still unstored is in
+/// [`MatchOutcome::pending`].
 pub async fn run<S: MatchStore>(
     setup: MatchSetup,
     store: Arc<S>,
@@ -178,6 +292,7 @@ pub async fn run<S: MatchStore>(
         deadline: None,
         hand_log: Vec::new(),
         hand_started_at: OffsetDateTime::now_utc(),
+        unrecorded: Vec::new(),
     };
     let mut rx_open = true;
     while t.m.winner().is_none() {
@@ -329,16 +444,26 @@ impl<S: MatchStore> Table<S> {
             names: self.setup.names.clone(),
             events: std::mem::take(&mut self.hand_log),
         };
-        // The audit log is integrity evidence: retry (no clock runs between hands).
-        for attempt in 0..5u32 {
+        // The audit log is integrity evidence: retry (no clock runs between hands), and
+        // keep the hand for `settle` if the database is still away. Once a hand has
+        // failed, later ones get a single try so an outage doesn't stall every hand.
+        let mut stored = false;
+        let attempts = if self.unrecorded.is_empty() { 5 } else { 1 };
+        for attempt in 0..attempts {
             match self.store.record_hand(&record).await {
-                Ok(()) => break,
+                Ok(()) => {
+                    stored = true;
+                    break;
+                }
                 Err(e) => {
                     let hand = record.number;
                     tracing::error!(match_id, hand, attempt, "failed to record hand: {e:#}");
                     tokio::time::sleep(Duration::from_millis(200 << attempt)).await;
                 }
             }
+        }
+        if !stored {
+            self.unrecorded.push(record);
         }
         if self.m.winner().is_none() {
             self.next_hand_at = Some(Instant::now() + self.setup.timing.between_hands);
@@ -408,11 +533,20 @@ impl<S: MatchStore> Table<S> {
             winner,
             hands_played: self.m.hands_played(),
         };
+        // Hands that failed earlier are left to `settle`, after the players are free
+        // (each try can take the pool's acquire timeout while the database is down).
+        let mut pending = Pending {
+            hands: std::mem::take(&mut self.unrecorded),
+            finish: None,
+        };
         let mut ratings = None;
-        for attempt in 0..5u32 {
+        let mut finished = false;
+        let attempts = if pending.hands.is_empty() { 5 } else { 1 };
+        for attempt in 0..attempts {
             match self.store.finish_match(&result).await {
                 Ok(r) => {
                     ratings = r;
+                    finished = true;
                     break;
                 }
                 Err(e) => {
@@ -436,6 +570,13 @@ impl<S: MatchStore> Table<S> {
                 },
             );
         }
-        MatchOutcome { winner, ratings }
+        if !finished {
+            pending.finish = Some(result);
+        }
+        MatchOutcome {
+            winner,
+            ratings,
+            pending,
+        }
     }
 }

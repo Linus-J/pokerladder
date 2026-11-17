@@ -168,7 +168,10 @@
           {:else if !t.rated}
             <p class="muted">Unrated, so ratings didn't change.</p>
           {:else if t.resultSaved}
-            <p class="bad">The result couldn't be saved, so ratings didn't change.</p>
+            <p class="bad">
+              The result couldn't be saved yet. It should be soon, and ratings will update
+              then.
+            </p>
           {:else}
             <p class="muted">Saving the result and updating ratings...</p>
           {/if}
